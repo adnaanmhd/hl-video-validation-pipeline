@@ -1,0 +1,44 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Model weights (downloaded at setup time)
+ml_checks/models/weights/
+yolo11m.pt
+yolo11m.onnx
+
+# Sample data and test outputs
+ml_checks/sample_data/
+ml_checks/results/
+ml_checks/tests/benchmark_results.json
+ml_checks/tests/pipeline_results*.json
+ml_checks/tests/pipeline_results*.md
+
+# Videos
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Internal docs (not for public repo)
+idea-brief.md
+style-guide.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/

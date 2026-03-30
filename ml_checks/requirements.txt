@@ -1,0 +1,31 @@
+# Core ML frameworks
+torch>=2.0
+torchvision>=0.15
+
+# ONNX Runtime (CPU for local dev, GPU variant on AWS)
+onnxruntime>=1.17.0
+
+# Model libraries
+insightface>=0.7.3
+ultralytics>=8.1.0
+
+# Image/Video processing
+opencv-python>=4.9.0
+numpy>=1.24.0
+
+# Utilities
+Pillow>=10.0
+tqdm>=4.65
+gdown>=5.0
+
+# Required by 100DOH hand detector
+easydict
+scipy
+pyyaml
+cython
+
+# Grounding DINO (installed separately due to build dependencies)
+# pip install groundingdino-py
+# OR: pip install transformers  (for HuggingFace variant)
+transformers>=4.36.0
+supervision>=0.18.0
