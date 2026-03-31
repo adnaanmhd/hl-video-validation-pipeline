@@ -322,8 +322,23 @@ Examples:
     for v in videos:
         print(f"  - {v.name} ({os.path.getsize(v) / 1024 / 1024:.1f} MB)")
 
-    # Setup output directory
-    output_dir = Path(args.output)
+    # Setup output directory with sequential run numbering
+    base_output_dir = Path(args.output)
+    base_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine next run number
+    existing_runs = [
+        d for d in base_output_dir.iterdir()
+        if d.is_dir() and d.name.startswith("run_")
+    ]
+    existing_numbers = []
+    for d in existing_runs:
+        try:
+            existing_numbers.append(int(d.name.split("_", 1)[1]))
+        except (ValueError, IndexError):
+            pass
+    next_run = max(existing_numbers, default=0) + 1
+    output_dir = base_output_dir / f"run_{next_run:03d}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Configure pipeline
@@ -398,14 +413,62 @@ Examples:
     report_path = write_report(all_results, output_dir, config)
     print(f"\n{'='*70}")
     print(f"BATCH COMPLETE: {len(all_results)} videos processed")
+    print(f"Run directory: {output_dir}/")
     print(f"Report: {report_path}")
-    print(f"Per-video JSON: {output_dir}/")
     print(f"{'='*70}")
 
     # Save full batch JSON
     batch_json = output_dir / "batch_results.json"
     with open(batch_json, "w") as f:
         json.dump(all_results, f, indent=2, default=str)
+
+    # Update index.md in the base output directory
+    _update_index(base_output_dir, output_dir, all_results, config)
+
+
+def _update_index(
+    base_output_dir: Path,
+    run_dir: Path,
+    all_results: list[dict],
+    config: PipelineConfig,
+):
+    """Append this run to the index.md in the base output directory."""
+    index_path = base_output_dir / "index.md"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_name = run_dir.name
+    num_videos = len(all_results)
+
+    # Count overall status
+    total_passed = 0
+    total_failed = 0
+    total_errors = 0
+    for entry in all_results:
+        if "error" in entry:
+            total_errors += 1
+        elif any(r["status"] == "fail" for r in entry.get("results", {}).values()):
+            total_failed += 1
+        else:
+            total_passed += 1
+
+    status_summary = f"{total_passed} passed, {total_failed} failed"
+    if total_errors:
+        status_summary += f", {total_errors} errors"
+
+    entry_line = f"| [{run_name}]({run_name}/batch_report.md) | {timestamp} | {num_videos} | {status_summary} |"
+
+    if index_path.exists():
+        content = index_path.read_text()
+        content = content.rstrip("\n") + "\n" + entry_line + "\n"
+    else:
+        content = (
+            "# Pipeline Run Index\n"
+            "\n"
+            "| Run | Timestamp | Videos | Result |\n"
+            "|-----|-----------|--------|--------|\n"
+            f"{entry_line}\n"
+        )
+
+    index_path.write_text(content)
 
 
 if __name__ == "__main__":
