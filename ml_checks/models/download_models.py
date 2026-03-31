@@ -86,9 +86,20 @@ def download_hands23():
 
     if not weight_file.exists():
         print("Downloading Hands23 model weights (~400MB)...")
-        import urllib.request
         url = "https://fouheylab.eecs.umich.edu/~dandans/projects/hands23/model_weights/model_hands23.pth"
-        urllib.request.urlretrieve(url, str(weight_file))
+        # Use wget/curl as the server's SSL cert can fail Python's strict verification
+        if subprocess.run(["which", "wget"], capture_output=True).returncode == 0:
+            subprocess.run(["wget", "--no-check-certificate", "-O", str(weight_file), url], check=True)
+        elif subprocess.run(["which", "curl"], capture_output=True).returncode == 0:
+            subprocess.run(["curl", "-kL", "-o", str(weight_file), url], check=True)
+        else:
+            import ssl
+            import urllib.request
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(url, context=ctx) as resp, open(str(weight_file), "wb") as f:
+                f.write(resp.read())
         print(f"Weights saved to {weight_file} ({weight_file.stat().st_size / 1024 / 1024:.0f} MB)")
     else:
         print(f"Weights already exist at {weight_file}")
