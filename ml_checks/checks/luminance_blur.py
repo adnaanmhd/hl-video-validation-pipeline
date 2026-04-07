@@ -37,6 +37,9 @@ class LuminanceBlurConfig:
     # Video-level
     min_good_ratio: float = 0.80
 
+    # Brightness stability
+    max_brightness_std: float = 60.0
+
 
 @dataclass
 class FrameMetrics:
@@ -188,11 +191,16 @@ def check_luminance_blur(
     reject_count = sum(1 for l in labels if l == "reject")
     good_ratio = (accept_count + review_count) / len(labels)
 
+    # Brightness stability: std dev of per-frame mean luminance
+    per_frame_luminances = [m.mean_luminance for m in all_metrics]
+    brightness_std = float(np.std(per_frame_luminances))
+    brightness_stable = brightness_std <= cfg.max_brightness_std
+
     # Segment analysis
     segments = find_segments(labels)
 
-    # Video-level decision
-    if good_ratio >= cfg.min_good_ratio:
+    # Video-level decision: must pass both good-ratio and brightness stability
+    if good_ratio >= cfg.min_good_ratio and brightness_stable:
         status = "pass"
     else:
         status = "fail"
@@ -214,6 +222,9 @@ def check_luminance_blur(
             "total_frames": len(frames),
             "good_ratio": round(good_ratio, 4),
             "min_good_ratio": cfg.min_good_ratio,
+            "brightness_std": round(brightness_std, 2),
+            "max_brightness_std": cfg.max_brightness_std,
+            "brightness_stable": brightness_stable,
             "reject_reasons": reject_reasons,
             "segments": [
                 {"start": s.start, "end": s.end, "kind": s.kind, "length": s.length}

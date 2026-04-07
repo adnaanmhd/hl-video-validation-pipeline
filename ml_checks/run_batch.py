@@ -41,11 +41,6 @@ CHECK_CATEGORIES = [
         ("meta_duration", "Duration"),
         ("meta_orientation", "Orientation"),
     ]),
-    ("Frame-Level Quality", [
-        ("quality_avg_brightness", "Average Brightness"),
-        ("quality_brightness_stability", "Brightness Stability"),
-        ("quality_near_black_frames", "Near-Black Frames"),
-    ]),
     ("Luminance & Blur", [
         ("luminance_blur", "Luminance & Blur"),
     ]),
@@ -103,13 +98,10 @@ ACCEPTANCE_CONDITIONS = {
     "meta_encoding": "H.264 video codec",
     "meta_resolution": ">= 1920 x 1080 pixels",
     "meta_frame_rate": ">= 28 FPS",
-    "meta_duration": ">= 60 seconds",
+    "meta_duration": ">= 180 seconds",
     "meta_orientation": "Rotation = 0 or 180 degrees and width > height",
-    "quality_avg_brightness": "Mean grayscale intensity >= 40",
-    "quality_brightness_stability": "Std dev <= 60 across frames",
-    "quality_near_black_frames": "Mean pixel >= 10 in all frames",
-    "luminance_blur": "(Accept + review) frames >= 80% of total",
-    "motion_camera_stability": "Mean optical flow <= 15 px in >= 80% frame pairs",
+    "luminance_blur": "(Accept + review) frames >= 80% and brightness std dev <= 60",
+    "motion_camera_stability": "Two-stage LK shakiness score <= 0.30",
     "motion_frozen_segments": "No > 30 consecutive frames with SSIM > 0.99",
     "ml_face_presence": "Face detection confidence < 0.8 in all frames",
     "ml_participants": "Persons detected <= 1 in >= 90% frames",
@@ -135,11 +127,8 @@ def _format_actual(key: str, details: dict) -> str:
         "meta_frame_rate": lambda: f"{d.get('fps', '?')} FPS",
         "meta_duration": lambda: f"{d.get('duration_s', '?')}s",
         "meta_orientation": lambda: f"rotation={d.get('rotation', '?')}, {d.get('width', '?')} x {d.get('height', '?')}",
-        "quality_avg_brightness": lambda: f"Mean = {d.get('mean_brightness', '?')} (range {d.get('per_frame_min', '?')}-{d.get('per_frame_max', '?')})",
-        "quality_brightness_stability": lambda: f"Std dev = {d.get('brightness_std_dev', '?')}",
-        "quality_near_black_frames": lambda: f"{d.get('near_black_frames', '?')} near-black frames out of {d.get('total_frames', '?')}",
-        "luminance_blur": lambda: f"{d.get('good_ratio', 0):.0%} good ({d.get('accept_frames', 0)} accept + {d.get('review_frames', 0)} review + {d.get('reject_frames', 0)} reject)",
-        "motion_camera_stability": lambda: f"{d.get('stable_ratio', 0):.0%} stable pairs (mean flow = {d.get('mean_flow_magnitude', '?')} px, max = {d.get('max_flow_magnitude', '?')} px)",
+        "luminance_blur": lambda: f"{d.get('good_ratio', 0):.0%} good ({d.get('accept_frames', 0)} accept + {d.get('review_frames', 0)} review + {d.get('reject_frames', 0)} reject), brightness std={d.get('brightness_std', '?')}",
+        "motion_camera_stability": lambda: f"score={d.get('overall_score', '?')} ({d.get('shaky_seconds_count', 0)} shaky / {d.get('total_seconds', '?')}s, stage2={d.get('stage2_seconds_flagged', 0)}s deep-analysed)",
         "motion_frozen_segments": lambda: f"Longest frozen run = {d.get('longest_frozen_run', '?')} frames ({d.get('frozen_duration_s', '?')}s)",
         "ml_face_presence": lambda: f"{d.get('frames_with_prominent_face', '?')} frames with face >= 0.8 (max conf = {d.get('max_face_confidence_seen', '?')})",
         "ml_participants": lambda: f"{d.get('clean_frames', '?')}/{d.get('total_frames', '?')} clean frames ({d.get('clean_frames', 0) / max(d.get('total_frames', 1), 1):.1%})",
@@ -379,10 +368,10 @@ Examples:
 
             entry["processing_time_s"] = round(elapsed, 2)
 
-            # Count sampled frames from quality check details if available
-            quality_details = results.get("quality_avg_brightness")
-            if quality_details and quality_details.details:
-                entry["frames_sampled"] = quality_details.details.get("total_frames", "N/A")
+            # Count sampled frames from luminance_blur check details if available
+            lb_result = results.get("luminance_blur")
+            if lb_result and lb_result.details:
+                entry["frames_sampled"] = lb_result.details.get("total_frames", "N/A")
             else:
                 entry["frames_sampled"] = "N/A (metadata failed)"
 

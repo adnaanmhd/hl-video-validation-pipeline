@@ -1,6 +1,6 @@
 # Egocentric Video Validation Pipeline
 
-Validates egocentric (first-person POV) video quality across 18 checks for datasets used to train autonomous humanoid robots. Runs 5 check categories: video metadata, frame-level quality, luminance & blur, motion analysis, and ML-based detection.
+Validates egocentric (first-person POV) video quality across 15 checks for datasets used to train autonomous humanoid robots. Runs 4 check categories: video metadata, luminance & blur, motion analysis, and ML-based detection.
 
 ## Quick Start
 
@@ -41,23 +41,17 @@ See [checks.md](checks.md) for detailed acceptance conditions and thresholds.
 | Duration | >= 60 seconds |
 | Orientation | Rotation = 0 or 180, width > height |
 
-### Frame-Level Quality
-
-| Check | Acceptance Condition |
-|---|---|
-| Average Brightness | Mean grayscale intensity >= 40 |
-| Brightness Stability | Std dev <= 60 across frames |
-| Near-Black Frames | Mean pixel >= 10 in all frames |
-
 ### Luminance & Blur
 
-Per-frame classification using Tenengrad sharpness + luminance zones. Video passes if (accept + review) frames >= 80% of total.
+Per-frame classification using Tenengrad sharpness + luminance zones. Video passes if both conditions are met:
+1. (accept + review) frames >= 80% of total
+2. Brightness stability: std dev of per-frame mean luminance <= 60
 
 ### Motion Analysis
 
 | Check | Acceptance Condition |
 |---|---|
-| Camera Stability | Mean optical flow <= 15 px in >= 80% frame pairs |
+| Camera Stability | Two-stage LK shakiness score <= 0.30 |
 | Frozen Segments | No > 30 consecutive frames with SSIM > 0.99 |
 
 ### ML Detection
@@ -131,6 +125,7 @@ Each check shows: status (PASS/FAIL/REVIEW/SKIPPED), acceptance condition, and a
 |---|---|---|
 | SCRFD-2.5GF | Face detection | ~14 MB |
 | YOLO11m | Person + object detection | ~40 MB |
+| YOLO11m-pose | Body part keypoint detection | ~40 MB |
 | Hands23 | Hand detection + contact state | ~446 MB |
 | Grounding DINO | Zero-shot privacy detection | ~700 MB |
 
@@ -142,9 +137,10 @@ Estimated per-video processing time (120s video, 1 FPS sampling):
 
 | Stage | CPU (M-series Mac) | GPU (A10G) |
 |---|---|---|
-| Metadata + quality + motion | ~65s | ~65s |
+| Metadata + luminance/blur + motion | ~65s | ~65s |
 | SCRFD | ~1.5s | <1s |
 | YOLO11m | ~12s | ~2s |
+| YOLO11m-pose | ~12s | ~2s |
 | Hands23 | ~220s | ~15-25s |
 | Grounding DINO (flagged only) | ~3s/frame | <1s/frame |
 | **Total** | **~5 min** | **~1.5 min** |
@@ -192,7 +188,7 @@ FORCE_CPU=1 ./validate.sh /path/to/videos/
 ### Pipeline Behavior
 
 - **Metadata gate:** If any metadata check fails, all other checks are skipped.
-- **Independent categories:** Frame quality, motion, luminance/blur, and ML checks run independently of each other.
+- **Independent categories:** Luminance & blur, motion, and ML checks run independently of each other.
 - **Statuses:** `pass`, `fail`, `review` (borderline), `skipped` (metadata gate).
 
 ## Project Structure
@@ -210,8 +206,7 @@ hl-bachman/
     ├── checks/
     │   ├── check_results.py     # CheckResult dataclass
     │   ├── video_metadata.py    # 6 metadata checks
-    │   ├── frame_quality.py     # 3 brightness checks
-    │   ├── luminance_blur.py    # Tenengrad + luminance decision table
+    │   ├── luminance_blur.py    # Tenengrad + luminance + brightness stability
     │   ├── motion_analysis.py   # Optical flow + frozen segment detection
     │   ├── face_presence.py     # Face detection check
     │   ├── participants.py      # Person count check
@@ -219,11 +214,13 @@ hl-bachman/
     │   ├── hand_object_interaction.py  # Contact state check
     │   ├── privacy_safety.py    # Sensitive object detection
     │   ├── view_obstruction.py  # Lens obstruction heuristic
-    │   └── pov_hand_angle.py    # Hand angle check
+    │   ├── pov_hand_angle.py    # Hand angle check
+    │   └── body_part_visibility.py  # Keypoint-based body part check
     ├── models/
     │   ├── download_models.py   # Model weight downloader
     │   ├── scrfd_detector.py    # SCRFD face detector
     │   ├── yolo_detector.py     # YOLO11m object detector
+    │   ├── yolo_pose_detector.py # YOLO11m-pose keypoint detector
     │   ├── hand_detector.py     # Hands23 hand-object detector
     │   └── grounding_dino_detector.py  # Zero-shot privacy detector
     └── utils/

@@ -2,12 +2,11 @@
 
 Runs all checks in order:
   1. Video metadata (short-circuits on failure)
-  2. Frame-level quality
-  3. Luminance & blur
-  4. Motion analysis
-  5. ML detection (SCRFD, YOLO11m, YOLO11m-pose, Hands23, Grounding DINO)
+  2. Luminance & blur (includes brightness stability)
+  3. Motion analysis
+  4. ML detection (SCRFD, YOLO11m, YOLO11m-pose, Hands23, Grounding DINO)
 
-Results are keyed by category: meta_*, quality_*, luminance_blur,
+Results are keyed by category: meta_*, luminance_blur,
 motion_*, ml_*.
 """
 
@@ -21,11 +20,6 @@ from dataclasses import dataclass
 from ml_checks.checks.check_results import CheckResult
 from ml_checks.utils.video_metadata import get_video_metadata
 from ml_checks.checks.video_metadata import run_all_metadata_checks
-from ml_checks.checks.frame_quality import (
-    check_average_brightness,
-    check_brightness_stability,
-    check_near_black_frames,
-)
 from ml_checks.checks.luminance_blur import check_luminance_blur, LuminanceBlurConfig
 from ml_checks.checks.motion_analysis import check_camera_stability, check_frozen_segments
 from ml_checks.checks.face_presence import check_face_presence
@@ -41,9 +35,6 @@ from ml_checks.utils.frame_extractor import extract_frames
 
 # All non-metadata check keys, used for skipped results on metadata failure
 NON_META_CHECK_KEYS = [
-    "quality_avg_brightness",
-    "quality_brightness_stability",
-    "quality_near_black_frames",
     "luminance_blur",
     "motion_camera_stability",
     "motion_frozen_segments",
@@ -95,14 +86,27 @@ class PipelineConfig:
         "paper document . credit card . ID card . identification card . bank card"
     )
 
-    # Frame quality thresholds
-    min_avg_brightness: float = 40.0
+    # Brightness stability threshold
     max_brightness_std: float = 60.0
-    min_pixel_mean: float = 10.0
 
-    # Motion thresholds
-    camera_stability_threshold_px: float = 15.0
-    camera_stability_pass_rate: float = 0.80
+    # Camera stability (two-stage LK optical flow)
+    shaky_score_threshold: float = 0.30
+    deep_score_threshold: float = 0.25
+    fast_scale: float = 0.333
+    frame_skip: int = 2
+    stability_trans_threshold: float = 8.0
+    stability_jump_threshold: float = 30.0
+    stability_rot_threshold: float = 0.3
+    stability_variance_threshold: float = 6.0
+    stability_w_trans: float = 0.35
+    stability_w_var: float = 0.25
+    stability_w_rot: float = 0.20
+    stability_w_jump: float = 0.20
+    stability_max_corners: int = 300
+    stability_lk_win_size: tuple[int, int] = (21, 21)
+    stability_lk_max_level: int = 3
+
+    # Frozen segments
     frozen_max_consecutive: int = 30
     frozen_ssim_threshold: float = 0.99
 
@@ -206,33 +210,35 @@ class ValidationPipeline:
         print(f"Extracted {len(frames)} frames ({frame_meta['duration_s']}s video) "
               f"in {timings['frame_extraction']:.2f}s")
 
-        # ── Step 3: Frame quality checks ──────────────────────────
+        # ── Step 3: Luminance & blur ──────────────────────────────
         t0 = time.perf_counter()
-        results["quality_avg_brightness"] = check_average_brightness(
-            frames, min_brightness=self.config.min_avg_brightness,
+        lb_config = LuminanceBlurConfig(
+            min_good_ratio=self.config.luminance_blur_min_good_ratio,
+            max_brightness_std=self.config.max_brightness_std,
         )
-        results["quality_brightness_stability"] = check_brightness_stability(
-            frames, max_std_dev=self.config.max_brightness_std,
-        )
-        results["quality_near_black_frames"] = check_near_black_frames(
-            frames, min_pixel_mean=self.config.min_pixel_mean,
-        )
-        timings["frame_quality"] = time.perf_counter() - t0
-        print(f"Frame quality checks ({timings['frame_quality']:.2f}s)")
-
-        # ── Step 4: Luminance & blur ──────────────────────────────
-        t0 = time.perf_counter()
-        lb_config = LuminanceBlurConfig(min_good_ratio=self.config.luminance_blur_min_good_ratio)
         results["luminance_blur"] = check_luminance_blur(frames, config=lb_config)
         timings["luminance_blur"] = time.perf_counter() - t0
         print(f"Luminance & blur check ({timings['luminance_blur']:.2f}s)")
 
-        # ── Step 5: Motion analysis ───────────────────────────────
+        # ── Step 4: Motion analysis ───────────────────────────────
         t0 = time.perf_counter()
         results["motion_camera_stability"] = check_camera_stability(
-            frames,
-            threshold_px=self.config.camera_stability_threshold_px,
-            pass_rate=self.config.camera_stability_pass_rate,
+            video_path,
+            shaky_score_threshold=self.config.shaky_score_threshold,
+            deep_score_threshold=self.config.deep_score_threshold,
+            fast_scale=self.config.fast_scale,
+            frame_skip=self.config.frame_skip,
+            trans_threshold=self.config.stability_trans_threshold,
+            jump_threshold=self.config.stability_jump_threshold,
+            rot_threshold=self.config.stability_rot_threshold,
+            variance_threshold=self.config.stability_variance_threshold,
+            w_trans=self.config.stability_w_trans,
+            w_var=self.config.stability_w_var,
+            w_rot=self.config.stability_w_rot,
+            w_jump=self.config.stability_w_jump,
+            max_corners=self.config.stability_max_corners,
+            lk_win_size=self.config.stability_lk_win_size,
+            lk_max_level=self.config.stability_lk_max_level,
         )
         timings["camera_stability"] = time.perf_counter() - t0
 
@@ -246,7 +252,7 @@ class ValidationPipeline:
         print(f"Motion analysis ({timings['camera_stability']:.2f}s stability, "
               f"{timings['frozen_segments']:.2f}s frozen)")
 
-        # ── Step 6: ML model inference ────────────────────────────
+        # ── Step 5: ML model inference ────────────────────────────
         if not self._models_loaded:
             self.load_models()
 
@@ -317,7 +323,7 @@ class ValidationPipeline:
                 per_frame_gdino[idx] = gdino_dets
         timings["grounding_dino"] = t_gdino
 
-        # ── Step 7: ML checks ────────────────────────────────────
+        # ── Step 6: ML checks ────────────────────────────────────
         print("Running ML checks...")
 
         results["ml_face_presence"] = check_face_presence(
@@ -380,7 +386,6 @@ class ValidationPipeline:
         print(f"\nTiming breakdown:")
         print(f"  Metadata:         {timings['metadata']:.2f}s")
         print(f"  Frame extraction: {timings['frame_extraction']:.2f}s")
-        print(f"  Frame quality:    {timings['frame_quality']:.2f}s")
         print(f"  Luminance & blur: {timings['luminance_blur']:.2f}s")
         print(f"  Camera stability: {timings['camera_stability']:.2f}s")
         print(f"  Frozen segments:  {timings['frozen_segments']:.2f}s")
