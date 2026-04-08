@@ -41,7 +41,6 @@ from ml_checks.utils.early_stop import (
     eval_hand_object_interaction,
     eval_pov_hand_angle,
     eval_body_part_visibility,
-    eval_privacy_safety,
 )
 
 # Batch size for YOLO inference in the ML loop
@@ -84,7 +83,6 @@ class PipelineConfig:
     hand_pass_rate: float = 0.90
     interaction_pass_rate: float = 0.70
     participant_pass_rate: float = 0.90
-    privacy_yolo_threshold: float = 0.6
     privacy_gdino_threshold: float = 0.3
     obstruction_max_ratio: float = 0.10
     angle_threshold: float = 40.0
@@ -130,6 +128,10 @@ class PipelineConfig:
     # Luminance & blur
     luminance_blur_min_good_ratio: float = 0.80
 
+    # Hands23 input resolution cap (downscale long edge to this before inference).
+    # Set to None to disable and run at native resolution.
+    hands23_max_resolution: int | None = 720
+
     # Fail-fast: skip ML inference when quality checks fail
     fail_fast: bool = False
 
@@ -165,6 +167,7 @@ class ValidationPipeline:
         from ml_checks.models.hand_detector import HandObjectDetectorHands23
         self.hand_detector = HandObjectDetectorHands23(
             repo_dir=self.config.hand_detector_repo,
+            max_resolution=self.config.hands23_max_resolution,
         )
         print("  Hands23 loaded")
 
@@ -226,6 +229,9 @@ class ValidationPipeline:
         )
         timings["frame_extraction"] = time.perf_counter() - t0
         frame_h, frame_w = frame_meta["height"], frame_meta["width"]
+
+        # Compute per-frame timestamps in seconds (for privacy timestamp reporting)
+        frame_timestamps_sec = [i / self.config.sampling_fps for i in range(len(frames))]
 
         print(f"Extracted {len(frames)} frames ({frame_meta['duration_s']}s video) "
               f"in {timings['frame_extraction']:.2f}s")
@@ -322,11 +328,9 @@ class ValidationPipeline:
         per_frame_faces = []
         per_frame_yolo = []
         per_frame_yolo_persons = []
-        per_frame_yolo_sensitive = []
         per_frame_hands = []
         per_frame_objects = []
         per_frame_poses = []
-        flagged_for_gdino = []
 
         t_scrfd = 0.0
         t_yolo = 0.0
@@ -341,7 +345,6 @@ class ValidationPipeline:
             CheckSpec("hand_object_interaction", self.config.interaction_pass_rate, False),
             CheckSpec("pov_hand_angle", self.config.angle_pass_rate, False),
             CheckSpec("body_part_visibility", self.config.body_part_pass_rate, False),
-            CheckSpec("privacy_safety", 1.0, True),
         ])
 
         total_frames = len(frames)
@@ -376,10 +379,6 @@ class ValidationPipeline:
                 per_frame_yolo.append(yolo_dets)
                 persons = self.yolo_detector.get_persons(yolo_dets)
                 per_frame_yolo_persons.append(persons)
-                sensitive = self.yolo_detector.get_sensitive_objects(yolo_dets)
-                per_frame_yolo_sensitive.append(sensitive)
-                if sensitive:
-                    flagged_for_gdino.append(i)
 
                 poses = batch_poses[j]
                 per_frame_poses.append(poses)
@@ -407,8 +406,6 @@ class ValidationPipeline:
                 monitor.update("body_part_visibility",
                     eval_body_part_visibility(poses, hands, frame_h, frame_w,
                         0.4, self.config.body_part_keypoint_conf))
-                monitor.update("privacy_safety",
-                    eval_privacy_safety(sensitive, self.config.privacy_yolo_threshold))
 
                 monitor.advance_frame()
                 frames_inferred = i + 1
@@ -428,13 +425,12 @@ class ValidationPipeline:
         timings["yolo_pose"] = t_pose
         timings["hands23"] = t_hands23
 
-        # Grounding DINO on flagged frames (skip if privacy already failed)
-        per_frame_gdino = [[] for _ in range(len(per_frame_yolo_sensitive))]
+        # Grounding DINO on all frames for privacy detection
+        per_frame_gdino = [[] for _ in range(frames_inferred)]
         t_gdino = 0.0
-        privacy_status, _, _ = monitor.get_result("privacy_safety")
-        if self.gdino_detector and flagged_for_gdino and privacy_status != "fail":
-            print(f"  Running Grounding DINO on {len(flagged_for_gdino)} flagged frames...")
-            for idx in flagged_for_gdino:
+        if self.gdino_detector:
+            print(f"  Running Grounding DINO on {frames_inferred} frames...")
+            for idx in range(frames_inferred):
                 t0 = time.perf_counter()
                 gdino_dets = self.gdino_detector.detect(
                     frames[idx],
@@ -528,22 +524,12 @@ class ValidationPipeline:
                 pass_rate_threshold=self.config.interaction_pass_rate,
             )
 
-        # -- privacy_safety (may need GDINO data)
-        status, passes, processed = monitor.get_result("privacy_safety")
-        if status == "fail" and frames_inferred < total_frames:
-            results["ml_privacy_safety"] = CheckResult(
-                status="fail",
-                metric_value=round(passes / processed, 4) if processed else 0.0,
-                confidence=1.0,
-                details={**_es_details, "clean_frames": passes, "frames_processed": processed},
-            )
-        else:
-            results["ml_privacy_safety"] = check_privacy_safety(
-                per_frame_yolo_sensitive,
-                per_frame_gdino if self.gdino_detector else None,
-                yolo_conf_threshold=self.config.privacy_yolo_threshold,
-                gdino_conf_threshold=self.config.privacy_gdino_threshold,
-            )
+        # -- privacy_safety (GDINO on all frames, collects timestamps)
+        results["ml_privacy_safety"] = check_privacy_safety(
+            per_frame_gdino,
+            gdino_conf_threshold=self.config.privacy_gdino_threshold,
+            frame_timestamps_sec=frame_timestamps_sec,
+        )
 
         # -- view_obstruction (CPU-only, no ML models, no early stopping)
         results["ml_view_obstruction"] = check_view_obstruction(

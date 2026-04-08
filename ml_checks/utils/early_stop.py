@@ -210,9 +210,3 @@ def eval_body_part_visibility(
     return True
 
 
-def eval_privacy_safety(
-    sensitive_dets: list[Detection],
-    yolo_conf_threshold: float,
-) -> bool:
-    """True if no sensitive YOLO detections above threshold."""
-    return not any(d.confidence >= yolo_conf_threshold for d in sensitive_dets)

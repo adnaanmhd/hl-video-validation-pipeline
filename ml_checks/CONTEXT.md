@@ -32,7 +32,7 @@ See [checks.md](../checks.md) for full acceptance conditions and thresholds.
 | 2 | Participants | 0 other persons (face or body parts) in ≥ 90% frames | YOLO11m + SCRFD |
 | 3 | Hand Visibility | Both hands fully in frame (bbox > 2 px from every edge, ≥ 0.7 conf) in ≥ 90% frames | Hands23 |
 | 4 | Hand-Object Interaction | Interaction detected in ≥ 70% frames | Hands23 (contact state) |
-| 5 | Privacy Safety | Sensitive objects = 0 in ALL frames | YOLO11m pre-filter + Grounding DINO zero-shot |
+| 5 | Privacy Safety | Sensitive objects = 0 in ALL frames | Grounding DINO zero-shot on all frames |
 | 6 | View Obstruction | ≤ 10% frames obstructed | OpenCV heuristic (no ML) |
 | 7 | POV-Hand Angle | Angle from center to hands < 40° in ≥ 80% frames | Geometric computation on Hands23 output |
 | 8 | Body Part Visibility | Only hands/forearms (up to elbows) visible in ≥ 90% frames | YOLO11m-pose keypoint detection |
@@ -79,10 +79,10 @@ See [checks.md](../checks.md) for full acceptance conditions and thresholds.
 - **Speed:** ~5,141ms/frame CPU (~3.5x slower than Hands23).
 - Available via `./validate.sh --100doh` or `python ml_checks/models/download_models.py --100doh`.
 
-#### Grounding DINO (Privacy — Check 5, second stage)
+#### Grounding DINO (Privacy — Check 5)
 - **Why:** Zero-shot detection of arbitrary text-described objects ("credit card", "ID card", "paper document") without any fine-tuning or training data. 52.5 AP zero-shot on COCO — SOTA.
 - **Why not YOLO-World:** Lower zero-shot accuracy (35.4 vs 52.5 AP). For a zero-tolerance privacy check, accuracy > speed.
-- **Two-stage approach:** YOLO11m pre-filters frames that contain COCO sensitive classes (tv, laptop, cell_phone). Grounding DINO runs only on those flagged frames (~0-10% of total), keeping it fast.
+- **Runs on all inferred frames** (not pre-filtered by YOLO). This ensures every sensitive-object detection is captured with exact timestamps for reporting.
 - **Package:** HuggingFace `transformers` (`IDEA-Research/grounding-dino-base`)
 - **Speed:** ~2,757ms/frame CPU
 
@@ -219,19 +219,14 @@ Video file
       3. YOLO11m-pose keypoint detection (~114ms)
       4. Hands23 hand-object detection (~1.4s CPU / ~100-200ms GPU)
       5. View obstruction heuristic (<1ms)
-  → If YOLO flagged sensitive objects:
-      6. Grounding DINO on flagged frames only (~2.8s/frame CPU)
+  → Grounding DINO on all inferred frames for privacy (~2.8s/frame CPU)
   → Distribute results to 8 ML check functions
   → Aggregate all 20 check results
 ```
 
-### Grounding DINO Two-Stage Approach
+### Grounding DINO Privacy Detection
 
-Privacy check uses two stages to balance accuracy and speed:
-1. YOLO11m (already running for Check 2) flags frames with COCO classes: tv (62), laptop (63), cell_phone (67)
-2. Grounding DINO runs only on flagged frames with text prompt: `"laptop screen . computer monitor . smartphone screen . paper document . credit card . ID card . identification card . bank card"`
-
-This reduces Grounding DINO from 300 frames (~14 min on CPU) to ~0-30 frames (~0-84s).
+Privacy check runs Grounding DINO on all inferred frames with text prompt: `"laptop screen . computer monitor . smartphone screen . paper document . credit card . ID card . identification card . bank card"`. This ensures complete coverage — every sensitive-object detection is captured with HH:MM:SS timestamps for reporting. Privacy safety is excluded from early stopping so all frames are scanned.
 
 ### Check 2 Participants — Wearer Filtering
 
@@ -341,7 +336,8 @@ tqdm>=4.65
 | Hands23 over MediaPipe for hands | MediaPipe has 29-97% AP on egocentric data; Hands23 trained on egocentric datasets |
 | SCRFD over MediaPipe for faces | 93.8% AP on WIDER hard set; MediaPipe optimized for webcam |
 | Grounding DINO over fine-tuned YOLO for privacy | Zero-shot capability for arbitrary sensitive objects without training data |
-| Two-stage privacy (YOLO pre-filter + GDINO) | Reduces GDINO from 300 to ~15 frames, cutting cost by 95% |
+| GDINO on all frames for privacy | Ensures complete timestamp reporting; no frames missed by pre-filter |
+| Hands23 input downscaling (720p default) | Reduces inference time on the most expensive model with negligible accuracy impact |
 | Heuristic over ML for view obstruction | No standard ML model exists; signal is fundamentally low-level |
 | YOLO11m over YOLO11n | 51.5 vs 39.5 mAP; person detection is safety-critical for privacy |
 | Metadata gate (short-circuit) | Avoids expensive ML inference on videos that fail basic format/duration requirements |

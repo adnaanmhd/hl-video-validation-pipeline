@@ -74,16 +74,13 @@ def benchmark_yolo(frames: list[np.ndarray]) -> dict:
 
     # Count detections by type
     total_persons = 0
-    total_sensitive = 0
     for f in frames:
         dets = detector.detect(f)
         total_persons += len(detector.get_persons(dets))
-        total_sensitive += len(detector.get_sensitive_objects(dets))
 
     result["total_persons"] = total_persons
-    result["total_sensitive_objects"] = total_sensitive
     print(f"  p50: {result['p50_ms']:.1f}ms | p95: {result['p95_ms']:.1f}ms | mean: {result['mean_ms']:.1f}ms")
-    print(f"  Persons: {total_persons} | Sensitive objects: {total_sensitive}")
+    print(f"  Persons: {total_persons}")
     return result
 
 

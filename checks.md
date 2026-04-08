@@ -95,7 +95,7 @@ meets the 80% threshold.
 | View Obstruction        | <= 10% frames obstructed                                                                      | Occlusion detection                             |
 | Body Part Visibility    | Only hands/forearms (up to elbows) visible in >= 90% frames                                   | YOLO11m-pose keypoint detection                 |
 | POV-Hand Angle          | Hand angle from frame center < 40° in >= 80% frames                                           | Hand bbox center vs frame center                |
-| Privacy Safety          | Sensitive object detections = 0 in all frames                                                 | Two-stage YOLO + Grounding DINO                 |
+| Privacy Safety          | Sensitive object detections = 0 in all frames                                                 | Grounding DINO zero-shot detection              |
 
 ### POV-Hand Angle
 
@@ -109,21 +109,45 @@ normalized distance is mapped to an angle using an assumed diagonal FOV of 90°:
 A frame passes if ALL detected hands have angle < 40°. Frames with no hands
 detected count as failures. The video passes if >= 80% of frames pass.
 
-### Privacy Safety — Two-Stage Detection
+### Privacy Safety — Grounding DINO Detection
 
-**Stage 1 (YOLO11m):** Every sampled frame is checked for COCO sensitive classes
-(tv=62, laptop=63, cell_phone=67, book=73) at confidence >= 0.6. Frames with
-detections are flagged for Stage 2.
-
-**Stage 2 (Grounding DINO):** Only flagged frames are re-analysed using zero-shot
-detection with the text prompt:
+Every sampled frame is analysed using Grounding DINO zero-shot object detection
+with the text prompt:
 
     "laptop screen . computer monitor . smartphone screen .
      paper document . credit card . ID card . identification card . bank card"
 
-Grounding DINO thresholds: box_threshold=0.3, text_threshold=0.25. A frame is
-marked sensitive if either stage produces a high-confidence detection. The video
-passes only if zero frames are marked sensitive (zero tolerance).
+Grounding DINO thresholds: box_threshold=0.3, text_threshold=0.25. The video
+passes only if zero frames contain a detection above threshold (zero tolerance).
+
+When sensitive objects are detected, the check reports the exact timestamps
+(HH:MM:SS) and object labels for every frame with a detection. This information
+is included in the `sensitive_timestamps` field of the check result details and
+logged to stdout during the pipeline run.
+
+## Performance Optimizations
+
+### Hands23 Input Downscaling
+
+The Hands23 detector (Faster R-CNN X-101-FPN) is the most compute-intensive model
+in the pipeline. To reduce inference time, frames are downscaled before being fed
+to the model. The long edge of the frame is capped at `hands23_max_resolution`
+(default 720), preserving aspect ratio. Output bounding box coordinates are
+automatically scaled back to the original frame dimensions so downstream checks
+are unaffected.
+
+| Parameter                | Default | Effect                                          |
+| ------------------------ | ------- | ----------------------------------------------- |
+| `hands23_max_resolution` | 720     | Cap long edge to 720px (1920×1080 → 1280×720)   |
+| `hands23_max_resolution` | `None`  | Disable downscaling, run at native resolution   |
+
+Downscaling uses `cv2.INTER_AREA` (pixel-area averaging), which is the
+recommended interpolation method for reduction as it avoids aliasing artifacts.
+
+In egocentric video, hands are typically large in-frame (300-500px at 1080p,
+200-330px at 720p), well above the model's minimum effective anchor size (~32px).
+Impact on hand detection, contact state classification, and left/right
+classification is negligible at 720p.
 
 ## Pipeline Behavior
 
@@ -134,8 +158,10 @@ passes only if zero frames are marked sensitive (zero tolerance).
 - **Parallel execution:** When `fail_fast` is disabled (default), motion analysis runs in
   a background thread concurrently with ML detection.
 - **Early stopping:** During ML inference, an `EarlyStopMonitor` tracks per-check outcomes
-  frame by frame. Zero-tolerance checks (face presence, privacy safety) fail immediately on
-  the first failing frame. Threshold-based checks (hand visibility, participants, interaction,
+  frame by frame. Zero-tolerance checks (face presence) fail immediately on
+  the first failing frame. Privacy safety is excluded from early stopping so that
+  all frames are scanned and every sensitive-object timestamp is collected.
+  Threshold-based checks (hand visibility, participants, interaction,
   POV-hand angle, body part visibility) are marked pass once they have accumulated enough
   passing frames, or fail once the required pass rate becomes mathematically unreachable.
   When all check outcomes are determined, the inference loop terminates early.

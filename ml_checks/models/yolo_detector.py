@@ -8,12 +8,6 @@ import time
 
 # COCO class IDs relevant to our checks
 PERSON_CLASS = 0
-SENSITIVE_CLASSES = {
-    62: "tv",
-    63: "laptop",
-    67: "cell_phone",
-    73: "book",
-}
 
 
 @dataclass
@@ -25,11 +19,10 @@ class Detection:
 
 
 class YOLODetector:
-    """YOLO11m object detector for person counting and privacy pre-filtering.
+    """YOLO11m object detector for person counting.
 
     Single forward pass serves:
     - Check 2 (Participants): filter class_id == 0 (person)
-    - Check 5 (Privacy): filter class_id in SENSITIVE_CLASSES
     """
 
     def __init__(
@@ -112,10 +105,6 @@ class YOLODetector:
     def get_persons(self, detections: list[Detection], min_conf: float = 0.4) -> list[Detection]:
         """Filter person detections."""
         return [d for d in detections if d.class_id == PERSON_CLASS and d.confidence >= min_conf]
-
-    def get_sensitive_objects(self, detections: list[Detection], min_conf: float = 0.6) -> list[Detection]:
-        """Filter sensitive object detections (screens, phones, books)."""
-        return [d for d in detections if d.class_id in SENSITIVE_CLASSES and d.confidence >= min_conf]
 
     def benchmark(self, frames: list[np.ndarray]) -> dict:
         """Benchmark inference speed."""

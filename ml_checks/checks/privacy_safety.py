@@ -5,70 +5,66 @@ Purpose: Data privacy compliance.
 """
 
 from ml_checks.checks.check_results import CheckResult
-from ml_checks.models.yolo_detector import Detection
 from ml_checks.models.grounding_dino_detector import ZeroShotDetection
 
 
+def _seconds_to_hhmmss(seconds: float) -> str:
+    """Convert seconds to HH:MM:SS format."""
+    total_secs = int(seconds)
+    h = total_secs // 3600
+    m = (total_secs % 3600) // 60
+    s = total_secs % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
 def check_privacy_safety(
-    per_frame_yolo_sensitive: list[list[Detection]],
-    per_frame_gdino: list[list[ZeroShotDetection]] | None = None,
-    yolo_conf_threshold: float = 0.6,
+    per_frame_gdino: list[list[ZeroShotDetection]],
     gdino_conf_threshold: float = 0.3,
+    frame_timestamps_sec: list[float] | None = None,
 ) -> CheckResult:
     """Check that no sensitive objects appear in any frame.
 
-    Two-stage approach:
-    1. YOLO11m detects COCO sensitive classes (tv, laptop, cell_phone)
-    2. Grounding DINO (if provided) detects fine-grained items (credit cards, IDs, documents)
+    Uses Grounding DINO zero-shot detection on every frame to find
+    sensitive items (credit cards, ID cards, documents, screens).
 
     Args:
-        per_frame_yolo_sensitive: YOLO sensitive object detections per frame.
-        per_frame_gdino: Grounding DINO detections per frame (only on flagged frames, or None).
-        yolo_conf_threshold: Min YOLO confidence for sensitive object.
+        per_frame_gdino: Grounding DINO detections per frame.
         gdino_conf_threshold: Min Grounding DINO confidence.
+        frame_timestamps_sec: Timestamp in seconds for each frame. Used to report
+            detection times in HH:MM:SS format.
 
     Returns:
         CheckResult.
     """
-    total_frames = len(per_frame_yolo_sensitive)
+    total_frames = len(per_frame_gdino)
     if total_frames == 0:
         return CheckResult(status="fail", metric_value=0.0, confidence=0.0,
                            details={"error": "no frames"})
 
     frames_with_sensitive = 0
     all_detections_info = []
+    # Grouped summary: timestamp -> list of detected objects
+    sensitive_timestamps: list[dict] = []
 
-    for i, yolo_dets in enumerate(per_frame_yolo_sensitive):
-        frame_has_sensitive = False
+    for i, gdino_dets in enumerate(per_frame_gdino):
+        ts_sec = frame_timestamps_sec[i] if frame_timestamps_sec else i
 
-        # Check YOLO detections
-        high_conf_yolo = [d for d in yolo_dets if d.confidence >= yolo_conf_threshold]
-        if high_conf_yolo:
-            frame_has_sensitive = True
-            for d in high_conf_yolo:
+        high_conf = [d for d in gdino_dets if d.confidence >= gdino_conf_threshold]
+        if high_conf:
+            frames_with_sensitive += 1
+            frame_objects: list[str] = []
+            for d in high_conf:
                 all_detections_info.append({
                     "frame": i,
-                    "source": "yolo",
-                    "class": d.class_name,
+                    "timestamp": _seconds_to_hhmmss(ts_sec),
+                    "label": d.label,
                     "confidence": round(d.confidence, 3),
                 })
-
-        # Check Grounding DINO detections (if available for this frame)
-        if per_frame_gdino and i < len(per_frame_gdino):
-            gdino_dets = per_frame_gdino[i]
-            high_conf_gdino = [d for d in gdino_dets if d.confidence >= gdino_conf_threshold]
-            if high_conf_gdino:
-                frame_has_sensitive = True
-                for d in high_conf_gdino:
-                    all_detections_info.append({
-                        "frame": i,
-                        "source": "grounding_dino",
-                        "label": d.label,
-                        "confidence": round(d.confidence, 3),
-                    })
-
-        if frame_has_sensitive:
-            frames_with_sensitive += 1
+                frame_objects.append(d.label)
+            sensitive_timestamps.append({
+                "timestamp": _seconds_to_hhmmss(ts_sec),
+                "objects": frame_objects,
+            })
 
     # Metric: fraction of CLEAN frames (no sensitive objects)
     clean_ratio = 1.0 - (frames_with_sensitive / total_frames)
@@ -82,6 +78,14 @@ def check_privacy_safety(
     else:
         confidence = max(0.0, 1.0 - (frames_with_sensitive / total_frames))
 
+    # Log timestamps to stdout
+    if sensitive_timestamps:
+        print(f"\n  Privacy safety: sensitive objects detected at "
+              f"{len(sensitive_timestamps)} timestamp(s):")
+        for entry in sensitive_timestamps:
+            objs = ", ".join(entry["objects"])
+            print(f"    [{entry['timestamp']}] {objs}")
+
     return CheckResult(
         status=status,
         metric_value=round(clean_ratio, 4),
@@ -89,6 +93,7 @@ def check_privacy_safety(
         details={
             "frames_with_sensitive_objects": frames_with_sensitive,
             "total_frames": total_frames,
-            "detections": all_detections_info[:20],  # Cap for readability
+            "sensitive_timestamps": sensitive_timestamps,
+            "detections": all_detections_info,
         },
     )

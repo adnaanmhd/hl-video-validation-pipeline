@@ -106,11 +106,13 @@ class HandObjectDetectorHands23:
         hand_thresh: float = 0.5,
         obj_thresh: float = 0.3,
         hand_rela_thresh: float = 0.3,
+        max_resolution: int | None = 720,
     ):
         self.repo_dir = Path(repo_dir).resolve()
         self.hand_thresh = hand_thresh
         self.obj_thresh = obj_thresh
         self.hand_rela_thresh = hand_rela_thresh
+        self.max_resolution = max_resolution
 
         # Validate setup
         if not self.repo_dir.exists():
@@ -177,6 +179,15 @@ class HandObjectDetectorHands23:
         Returns:
             Tuple of (hand_detections, object_detections).
         """
+        # Downscale to max_resolution if configured (scale bboxes back afterwards)
+        h_orig, w_orig = frame_bgr.shape[:2]
+        scale = 1.0
+        if self.max_resolution and max(h_orig, w_orig) > self.max_resolution:
+            scale = self.max_resolution / max(h_orig, w_orig)
+            new_w = int(w_orig * scale)
+            new_h = int(h_orig * scale)
+            frame_bgr = cv2.resize(frame_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
         outputs = self.predictor(frame_bgr)
         instances = outputs["instances"].to("cpu")
 
@@ -184,6 +195,8 @@ class HandObjectDetectorHands23:
             return [], []
 
         boxes = instances.pred_boxes.tensor.numpy()
+        if scale != 1.0:
+            boxes = boxes / scale
         scores = instances.scores.numpy()
         classes = instances.pred_classes.numpy()
         pred_dz = instances.pred_dz.numpy()
@@ -235,7 +248,7 @@ class HandObjectDetectorHands23:
             times.append(time.perf_counter() - t0)
         times_ms = [t * 1000 for t in times]
         return {
-            "model": "Hands23 (Faster R-CNN X-101-FPN, NeurIPS 2023)",
+            "model": f"Hands23 (Faster R-CNN X-101-FPN, max_res={self.max_resolution})",
             "frames": len(frames),
             "p50_ms": round(np.percentile(times_ms, 50), 2),
             "p95_ms": round(np.percentile(times_ms, 95), 2),

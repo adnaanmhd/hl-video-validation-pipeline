@@ -67,7 +67,7 @@ flowchart TD
 
         subgraph MODELS["Model Inference"]
             direction TB
-            YOLO_BATCH["<b>YOLO11s</b> — batch detect<br/>Persons + sensitive objects"]
+            YOLO_BATCH["<b>YOLO11s</b> — batch detect<br/>Persons"]
             YOLO_BATCH --> POSE_BATCH["<b>YOLO11m-pose</b> — batch detect<br/>17 body keypoints"]
             POSE_BATCH --> PER_FRAME["Per-frame:"]
             PER_FRAME --> SCRFD["<b>SCRFD-2.5GF</b><br/>Face detection"]
@@ -84,14 +84,10 @@ flowchart TD
         end
     end
 
-    ES_DONE --> GDINO_CHECK
     NEXT_BATCH -.->|loop| BATCH_START
 
-    GDINO_CHECK{"Privacy failed<br/>by YOLO alone?"}
-    GDINO_CHECK -->|Yes, skip| CHECKS
-    GDINO_CHECK -->|"No, flagged frames exist"| GDINO
-
-    GDINO["<b>Grounding DINO</b><br/>Zero-shot detection on flagged frames only"]
+    GDINO["<b>Grounding DINO</b><br/>Zero-shot detection on all inferred frames"]
+    ES_DONE --> GDINO
     GDINO --> CHECKS
 
     subgraph CHECKS["Step 6: Check Aggregation — 8 ML Checks"]
@@ -192,7 +188,7 @@ Per-frame classification using Tenengrad sharpness + luminance zones. Video pass
 | Participants | YOLO11s + SCRFD | Persons <= 1 in >= 90% frames |
 | Hand Visibility | Hands23 | Both hands fully in frame (bbox > 2 px from every edge) in >= 90% frames |
 | Hand-Object Interaction | Hands23 | Interaction in >= 70% frames |
-| Privacy Safety | YOLO11s + Grounding DINO | 0 sensitive objects in all frames |
+| Privacy Safety | Grounding DINO | 0 sensitive objects in all frames |
 | View Obstruction | OpenCV heuristics | <= 10% frames obstructed |
 | POV-Hand Angle | Geometric | Hands within 40 deg of center in >= 80% frames |
 | Body Part Visibility | YOLO11m-pose | Only hands/forearms (up to elbows) in >= 90% frames |
@@ -293,6 +289,7 @@ The pipeline applies several optimizations automatically:
 - **Frozen segment subsampling:** Samples at 10 FPS instead of native FPS (3-6x faster).
 - **Camera stability FPS cap:** Caps optical flow analysis at 30 FPS regardless of native frame rate, so 60fps videos process at the same speed as 30fps.
 - **YOLO11s default:** Uses the small YOLO variant for object detection (2x faster, sufficient for person/object detection at 1080p).
+- **Hands23 downscaling:** Caps input resolution to 720p before Hands23 inference (configurable via `hands23_max_resolution`), reducing compute on the most expensive model with negligible impact on egocentric hand detection.
 
 ### Batch Processing
 
@@ -346,7 +343,7 @@ FORCE_CPU=1 ./validate.sh /path/to/videos/
 
 - **Metadata gate:** If any metadata check fails, all other checks are skipped.
 - **Fail-fast:** When enabled, luminance or motion failures skip ML inference entirely.
-- **Early stopping:** ML inference loop stops when all 7 check outcomes are mathematically locked in (based on pass-rate thresholds and frames processed so far).
+- **Early stopping:** ML inference loop stops when all check outcomes are mathematically locked in (based on pass-rate thresholds and frames processed so far). Privacy safety is excluded from early stopping so that all sensitive-object timestamps are collected.
 - **Parallel execution:** Motion analysis runs in a background thread while ML inference runs on the main thread. Both read the video independently.
 - **Statuses:** `pass`, `fail`, `review` (borderline), `skipped` (metadata gate or fail-fast).
 
