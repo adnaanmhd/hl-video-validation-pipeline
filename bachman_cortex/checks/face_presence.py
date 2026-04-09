@@ -4,8 +4,8 @@ Criterion: Face detection confidence < 0.8 in ALL sampled frames.
 Purpose: Privacy — ensure other people's faces aren't prominently captured.
 """
 
-from ml_checks.checks.check_results import CheckResult
-from ml_checks.models.scrfd_detector import FaceDetection
+from bachman_cortex.checks.check_results import CheckResult
+from bachman_cortex.models.scrfd_detector import FaceDetection
 
 
 def check_face_presence(

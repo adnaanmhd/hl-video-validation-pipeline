@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from dataclasses import dataclass
 
-from ml_checks.checks.check_results import CheckResult
+from bachman_cortex.checks.check_results import CheckResult
 
 
 @dataclass

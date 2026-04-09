@@ -4,7 +4,7 @@ Six deterministic checks on container format, codec, resolution,
 frame rate, duration, and orientation. All use confidence=1.0.
 """
 
-from ml_checks.checks.check_results import CheckResult
+from bachman_cortex.checks.check_results import CheckResult
 
 
 def check_format(metadata: dict) -> CheckResult:

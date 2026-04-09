@@ -7,8 +7,8 @@ Purpose: Ensure hands are in the working area of the frame (relevant for robot l
 
 import math
 import numpy as np
-from ml_checks.checks.check_results import CheckResult
-from ml_checks.models.hand_detector import HandDetection
+from bachman_cortex.checks.check_results import CheckResult
+from bachman_cortex.models.hand_detector import HandDetection
 
 
 def compute_hand_angle(

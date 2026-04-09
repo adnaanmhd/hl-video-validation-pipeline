@@ -8,13 +8,13 @@ to skip remaining frames.
 import math
 from dataclasses import dataclass, field
 
-from ml_checks.models.hand_detector import HandDetection, HandSide, ContactState
-from ml_checks.models.scrfd_detector import FaceDetection
-from ml_checks.models.yolo_detector import Detection
-from ml_checks.models.yolo_pose_detector import PoseDetection, ALLOWED_WEARER_KEYPOINTS
-from ml_checks.checks.pov_hand_angle import compute_hand_angle
-from ml_checks.checks.participants import _is_wearer_body_part
-from ml_checks.checks.body_part_visibility import _is_wearer_pose, _get_disallowed_keypoints
+from bachman_cortex.models.hand_detector import HandDetection, HandSide, ContactState
+from bachman_cortex.models.scrfd_detector import FaceDetection
+from bachman_cortex.models.yolo_detector import Detection
+from bachman_cortex.models.yolo_pose_detector import PoseDetection, ALLOWED_WEARER_KEYPOINTS
+from bachman_cortex.checks.pov_hand_angle import compute_hand_angle
+from bachman_cortex.checks.participants import _is_wearer_body_part
+from bachman_cortex.checks.body_part_visibility import _is_wearer_pose, _get_disallowed_keypoints
 
 
 # ── Check specification ──────────────────────────────────────────────────────

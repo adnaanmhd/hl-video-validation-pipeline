@@ -18,21 +18,21 @@ from pathlib import Path
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 
-from ml_checks.checks.check_results import CheckResult
-from ml_checks.utils.video_metadata import get_video_metadata
-from ml_checks.checks.video_metadata import run_all_metadata_checks
-from ml_checks.checks.luminance_blur import check_luminance_blur, LuminanceBlurConfig
-from ml_checks.checks.motion_analysis import check_camera_stability, check_frozen_segments
-from ml_checks.checks.face_presence import check_face_presence
-from ml_checks.checks.participants import check_participants
-from ml_checks.checks.hand_visibility import check_hand_visibility
-from ml_checks.checks.hand_object_interaction import check_hand_object_interaction
-from ml_checks.checks.privacy_safety import check_privacy_safety
-from ml_checks.checks.view_obstruction import check_view_obstruction
-from ml_checks.checks.pov_hand_angle import check_pov_hand_angle
-from ml_checks.checks.body_part_visibility import check_body_part_visibility
-from ml_checks.utils.frame_extractor import extract_frames
-from ml_checks.utils.early_stop import (
+from bachman_cortex.checks.check_results import CheckResult
+from bachman_cortex.utils.video_metadata import get_video_metadata
+from bachman_cortex.checks.video_metadata import run_all_metadata_checks
+from bachman_cortex.checks.luminance_blur import check_luminance_blur, LuminanceBlurConfig
+from bachman_cortex.checks.motion_analysis import check_camera_stability, check_frozen_segments
+from bachman_cortex.checks.face_presence import check_face_presence
+from bachman_cortex.checks.participants import check_participants
+from bachman_cortex.checks.hand_visibility import check_hand_visibility
+from bachman_cortex.checks.hand_object_interaction import check_hand_object_interaction
+from bachman_cortex.checks.privacy_safety import check_privacy_safety
+from bachman_cortex.checks.view_obstruction import check_view_obstruction
+from bachman_cortex.checks.pov_hand_angle import check_pov_hand_angle
+from bachman_cortex.checks.body_part_visibility import check_body_part_visibility
+from bachman_cortex.utils.frame_extractor import extract_frames
+from bachman_cortex.utils.early_stop import (
     EarlyStopMonitor,
     CheckSpec,
     eval_hand_visibility,
@@ -70,11 +70,11 @@ class PipelineConfig:
     max_frames: int | None = None
 
     # Model paths
-    scrfd_root: str = "ml_checks/models/weights/insightface"
+    scrfd_root: str = "bachman_cortex/models/weights/insightface"
     yolo_model: str = "yolo11s.pt"
     yolo_pose_model: str = "yolo11m-pose.pt"
-    hand_detector_repo: str = "ml_checks/models/weights/hands23_detector"
-    gdino_cache: str = "ml_checks/models/weights/grounding_dino"
+    hand_detector_repo: str = "bachman_cortex/models/weights/hands23_detector"
+    gdino_cache: str = "bachman_cortex/models/weights/grounding_dino"
 
     # ML thresholds
     face_confidence_threshold: float = 0.8
@@ -149,22 +149,22 @@ class ValidationPipeline:
         t0 = time.perf_counter()
 
         # 1. SCRFD face detector
-        from ml_checks.models.scrfd_detector import SCRFDDetector
+        from bachman_cortex.models.scrfd_detector import SCRFDDetector
         self.face_detector = SCRFDDetector(root=self.config.scrfd_root)
         print("  SCRFD loaded")
 
         # 2. YOLO11m
-        from ml_checks.models.yolo_detector import YOLODetector
+        from bachman_cortex.models.yolo_detector import YOLODetector
         self.yolo_detector = YOLODetector(model_path=self.config.yolo_model)
         print("  YOLO11m loaded")
 
         # 3. YOLO11m-pose
-        from ml_checks.models.yolo_pose_detector import YOLOPoseDetector
+        from bachman_cortex.models.yolo_pose_detector import YOLOPoseDetector
         self.pose_detector = YOLOPoseDetector(model_path=self.config.yolo_pose_model)
         print("  YOLO11m-pose loaded")
 
         # 4. Hands23 hand-object detector
-        from ml_checks.models.hand_detector import HandObjectDetectorHands23
+        from bachman_cortex.models.hand_detector import HandObjectDetectorHands23
         self.hand_detector = HandObjectDetectorHands23(
             repo_dir=self.config.hand_detector_repo,
             max_resolution=self.config.hands23_max_resolution,
@@ -174,7 +174,7 @@ class ValidationPipeline:
         # 5. Grounding DINO (optional, for privacy)
         self.gdino_detector = None
         if self.config.run_grounding_dino:
-            from ml_checks.models.grounding_dino_detector import GroundingDINODetector
+            from bachman_cortex.models.grounding_dino_detector import GroundingDINODetector
             self.gdino_detector = GroundingDINODetector(
                 cache_dir=self.config.gdino_cache,
             )
@@ -609,7 +609,7 @@ MLCheckPipeline = ValidationPipeline
 if __name__ == "__main__":
     import sys
 
-    video_path = sys.argv[1] if len(sys.argv) > 1 else "ml_checks/sample_data/test_30s.mp4"
+    video_path = sys.argv[1] if len(sys.argv) > 1 else "bachman_cortex/sample_data/test_30s.mp4"
 
     config = PipelineConfig(
         sampling_fps=1.0,

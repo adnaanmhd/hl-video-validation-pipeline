@@ -1,9 +1,9 @@
 """Download all required model weights and set up dependencies for ML checks.
 
 Usage:
-    python ml_checks/models/download_models.py          # Download SCRFD, YOLO11m, YOLO11m-pose, Grounding DINO, Hands23
-    python ml_checks/models/download_models.py --100doh  # Also download + compile 100DOH (legacy)
-    python ml_checks/models/download_models.py --all     # Everything including legacy 100DOH
+    python bachman_cortex/models/download_models.py          # Download SCRFD, YOLO11m, YOLO11m-pose, Grounding DINO, Hands23
+    python bachman_cortex/models/download_models.py --100doh  # Also download + compile 100DOH (legacy)
+    python bachman_cortex/models/download_models.py --all     # Everything including legacy 100DOH
 """
 
 import os

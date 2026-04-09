@@ -6,7 +6,7 @@ Purpose: Detect lens coverage/blockage (finger over lens, fogged lens, cap).
 
 import cv2
 import numpy as np
-from ml_checks.checks.check_results import CheckResult
+from bachman_cortex.checks.check_results import CheckResult
 
 
 def is_frame_obstructed(

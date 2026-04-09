@@ -7,7 +7,7 @@ It detects hands and objects, classifying:
 - Offset vectors from hand to interacted object
 
 Setup:
-    python ml_checks/models/download_models.py --all
+    python bachman_cortex/models/download_models.py --all
 
 Runtime (macOS):
     The C extension links against libtorch. On macOS, set DYLD_LIBRARY_PATH *before* launching Python:
@@ -62,13 +62,13 @@ def _resolve_repo_dir(repo_dir: str | Path) -> Path:
     if not repo_dir.exists():
         raise FileNotFoundError(
             f"100DOH repo not found at {repo_dir}. "
-            f"Run: python ml_checks/models/download_models.py --all"
+            f"Run: python bachman_cortex/models/download_models.py --all"
         )
     weight_file = repo_dir / "models" / "res101_handobj_100K" / "pascal_voc" / "faster_rcnn_1_8_132028.pth"
     if not weight_file.exists():
         raise FileNotFoundError(
             f"100DOH weights not found at {weight_file}. "
-            f"Run: python ml_checks/models/download_models.py --all"
+            f"Run: python bachman_cortex/models/download_models.py --all"
         )
     so_files = list((repo_dir / "lib" / "model").glob("_C*.so")) + \
                list((repo_dir / "lib" / "model").glob("_C*.pyd"))
@@ -112,7 +112,7 @@ class HandObjectDetector100DOH:
 
     def __init__(
         self,
-        repo_dir: str | Path = "ml_checks/models/weights/hand_object_detector",
+        repo_dir: str | Path = "bachman_cortex/models/weights/hand_object_detector",
         weight_file: str = "models/res101_handobj_100K/pascal_voc/faster_rcnn_1_8_132028.pth",
         thresh_hand: float = 0.5,
         thresh_obj: float = 0.5,

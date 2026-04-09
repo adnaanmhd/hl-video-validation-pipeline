@@ -7,7 +7,7 @@ average brightness, brightness stability, and near-black frame detection.
 import cv2
 import numpy as np
 
-from ml_checks.checks.check_results import CheckResult
+from bachman_cortex.checks.check_results import CheckResult
 
 
 def check_average_brightness(

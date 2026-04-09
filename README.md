@@ -225,7 +225,7 @@ Per-frame classification using Tenengrad sharpness + luminance zones. Video pass
 
 | Flag | Default | Description |
 |---|---|---|
-| `--output`, `-o` | `ml_checks/results` | Output directory for reports |
+| `--output`, `-o` | `bachman_cortex/results` | Output directory for reports |
 | `--fps` | `1.0` | Frame sampling rate (FPS) |
 | `--max-frames` | unlimited | Max frames to sample per video |
 | `--no-gdino` | disabled | Skip Grounding DINO (faster) |
@@ -325,7 +325,7 @@ pip install 'git+https://github.com/facebookresearch/detectron2.git' --no-build-
 pip install -e .
 
 # 6. Download model weights
-python ml_checks/models/download_models.py
+python bachman_cortex/models/download_models.py
 
 # 7. Run
 hl-validate /path/to/videos/
@@ -355,7 +355,7 @@ hl-bachman/
 ├── pyproject.toml               # Package configuration
 ├── checks.md                    # Check specifications and thresholds
 ├── README.md
-└── ml_checks/
+└── bachman_cortex/
     ├── pipeline.py              # ValidationPipeline orchestrator
     ├── run_batch.py             # CLI entry point (hl-validate)
     ├── checks/

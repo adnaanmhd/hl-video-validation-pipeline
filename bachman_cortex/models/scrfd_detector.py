@@ -22,7 +22,7 @@ class SCRFDDetector:
     def __init__(
         self,
         model_name: str = "buffalo_sc",
-        root: str | Path = "ml_checks/models/weights/insightface",
+        root: str | Path = "bachman_cortex/models/weights/insightface",
         det_size: tuple[int, int] = (640, 640),
     ):
         from insightface.app import FaceAnalysis

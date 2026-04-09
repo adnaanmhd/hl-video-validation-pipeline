@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.scripts]
-hl-validate = "ml_checks.run_batch:main"
+hl-validate = "bachman_cortex.run_batch:main"
 
 [tool.setuptools.packages.find]
-include = ["ml_checks*"]
+include = ["bachman_cortex*"]

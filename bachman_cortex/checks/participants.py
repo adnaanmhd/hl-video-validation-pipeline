@@ -5,10 +5,10 @@ Purpose: Verify solo task performance. Camera wearer is invisible.
 """
 
 import numpy as np
-from ml_checks.checks.check_results import CheckResult
-from ml_checks.models.yolo_detector import Detection
-from ml_checks.models.scrfd_detector import FaceDetection
-from ml_checks.models.hand_detector import HandDetection
+from bachman_cortex.checks.check_results import CheckResult
+from bachman_cortex.models.yolo_detector import Detection
+from bachman_cortex.models.scrfd_detector import FaceDetection
+from bachman_cortex.models.hand_detector import HandDetection
 
 
 def _is_wearer_body_part(

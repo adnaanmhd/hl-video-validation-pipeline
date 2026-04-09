@@ -7,7 +7,7 @@ Previous backend (commented out): 100DOH (CVPR 2020)
 To revert to 100DOH, see hand_detector_100doh.py and swap the import in pipeline.py.
 
 Setup:
-    python ml_checks/models/download_models.py --all
+    python bachman_cortex/models/download_models.py --all
 """
 
 import os
@@ -101,7 +101,7 @@ class HandObjectDetectorHands23:
 
     def __init__(
         self,
-        repo_dir: str | Path = "ml_checks/models/weights/hands23_detector",
+        repo_dir: str | Path = "bachman_cortex/models/weights/hands23_detector",
         weight_file: str = "model_weights/model_hands23.pth",
         hand_thresh: float = 0.5,
         obj_thresh: float = 0.3,
@@ -118,13 +118,13 @@ class HandObjectDetectorHands23:
         if not self.repo_dir.exists():
             raise FileNotFoundError(
                 f"Hands23 repo not found at {self.repo_dir}. "
-                f"Run: python ml_checks/models/download_models.py --all"
+                f"Run: python bachman_cortex/models/download_models.py --all"
             )
         weights_path = self.repo_dir / weight_file
         if not weights_path.exists():
             raise FileNotFoundError(
                 f"Hands23 weights not found at {weights_path}. "
-                f"Run: python ml_checks/models/download_models.py --all"
+                f"Run: python bachman_cortex/models/download_models.py --all"
             )
 
         # Add Hands23 repo to sys.path so hodetector package is importable
@@ -260,5 +260,5 @@ class HandObjectDetectorHands23:
 
 # ============================================================
 # 100DOH Detector (previous backend — kept for reference)
-# To use: from ml_checks.models.hand_detector_100doh import HandObjectDetector100DOH
+# To use: from bachman_cortex.models.hand_detector_100doh import HandObjectDetector100DOH
 # ============================================================

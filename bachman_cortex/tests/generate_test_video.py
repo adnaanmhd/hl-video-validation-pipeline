@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def generate_test_video(
-    output_path: str = "ml_checks/sample_data/test_30s.mp4",
+    output_path: str = "bachman_cortex/sample_data/test_30s.mp4",
     duration_s: int = 30,
     fps: int = 30,
     width: int = 1920,

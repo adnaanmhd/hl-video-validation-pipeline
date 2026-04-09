@@ -7,8 +7,8 @@ Purpose: Ensure wearer's hands are completely visible for robot learning.
 
 import numpy as np
 
-from ml_checks.checks.check_results import CheckResult
-from ml_checks.models.hand_detector import HandDetection, HandSide
+from bachman_cortex.checks.check_results import CheckResult
+from bachman_cortex.models.hand_detector import HandDetection, HandSide
 
 
 def _hand_in_frame(bbox: np.ndarray, frame_w: int, frame_h: int,

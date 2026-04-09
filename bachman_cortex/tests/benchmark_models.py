@@ -17,7 +17,7 @@ sys.path.insert(0, ROOT)
 import torch
 os.environ["DYLD_LIBRARY_PATH"] = str(os.path.join(os.path.dirname(torch.__file__), "lib"))
 
-from ml_checks.utils.frame_extractor import extract_frames
+from bachman_cortex.utils.frame_extractor import extract_frames
 
 
 def benchmark_scrfd(frames: list[np.ndarray]) -> dict:
@@ -26,10 +26,10 @@ def benchmark_scrfd(frames: list[np.ndarray]) -> dict:
     print("SCRFD-2.5GF Face Detector")
     print("=" * 60)
 
-    from ml_checks.models.scrfd_detector import SCRFDDetector
+    from bachman_cortex.models.scrfd_detector import SCRFDDetector
 
     detector = SCRFDDetector(
-        root=os.path.join(ROOT, "ml_checks/models/weights/insightface"),
+        root=os.path.join(ROOT, "bachman_cortex/models/weights/insightface"),
     )
 
     # Warmup
@@ -59,7 +59,7 @@ def benchmark_yolo(frames: list[np.ndarray]) -> dict:
     print("YOLO11m Object Detector")
     print("=" * 60)
 
-    from ml_checks.models.yolo_detector import YOLODetector
+    from bachman_cortex.models.yolo_detector import YOLODetector
 
     detector = YOLODetector(model_path="yolo11m.pt")
 
@@ -90,10 +90,10 @@ def benchmark_100doh(frames: list[np.ndarray]) -> dict:
     print("100DOH Hand-Object Detector (ResNet-101)")
     print("=" * 60)
 
-    from ml_checks.models.hand_detector import HandObjectDetector100DOH
+    from bachman_cortex.models.hand_detector import HandObjectDetector100DOH
 
     detector = HandObjectDetector100DOH(
-        repo_dir=os.path.join(ROOT, "ml_checks/models/weights/hand_object_detector"),
+        repo_dir=os.path.join(ROOT, "bachman_cortex/models/weights/hand_object_detector"),
     )
 
     # Warmup
@@ -133,10 +133,10 @@ def benchmark_grounding_dino(frames: list[np.ndarray]) -> dict:
     print("Grounding DINO (zero-shot, base)")
     print("=" * 60)
 
-    from ml_checks.models.grounding_dino_detector import GroundingDINODetector
+    from bachman_cortex.models.grounding_dino_detector import GroundingDINODetector
 
     detector = GroundingDINODetector(
-        cache_dir=os.path.join(ROOT, "ml_checks/models/weights/grounding_dino"),
+        cache_dir=os.path.join(ROOT, "bachman_cortex/models/weights/grounding_dino"),
     )
 
     text_prompt = "laptop screen . computer monitor . smartphone screen . paper document . credit card . ID card"
@@ -169,7 +169,7 @@ def benchmark_grounding_dino(frames: list[np.ndarray]) -> dict:
 
 
 def main():
-    video_path = os.path.join(ROOT, "ml_checks/sample_data/test_30s.mp4")
+    video_path = os.path.join(ROOT, "bachman_cortex/sample_data/test_30s.mp4")
     print(f"Extracting frames from {video_path}...")
     frames, meta = extract_frames(video_path, fps=1.0, max_frames=30)
     print(f"Extracted {meta['frames_extracted']} frames in {meta['extraction_time_s']}s")
@@ -213,7 +213,7 @@ def main():
     print(f"  TOTAL:          {total_300_frames + gdino_estimated:.1f}s")
 
     # Save results
-    output_file = os.path.join(ROOT, "ml_checks/tests/benchmark_results.json")
+    output_file = os.path.join(ROOT, "bachman_cortex/tests/benchmark_results.json")
     with open(output_file, "w") as f:
         # Convert numpy types for JSON
         def default(o):

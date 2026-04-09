@@ -4,8 +4,8 @@ Criterion: Interaction detected in >= 70% of frames.
 Purpose: Verify actual task manipulation is captured (critical for robot training).
 """
 
-from ml_checks.checks.check_results import CheckResult
-from ml_checks.models.hand_detector import HandDetection, ContactState
+from bachman_cortex.checks.check_results import CheckResult
+from bachman_cortex.models.hand_detector import HandDetection, ContactState
 
 
 def check_hand_object_interaction(

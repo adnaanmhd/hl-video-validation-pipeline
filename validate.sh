@@ -38,7 +38,7 @@ if [ "$SETUP_ONLY" -eq 0 ] && [ "${#PIPELINE_ARGS[@]}" -eq 0 ]; then
     echo "  ./validate.sh --setup-only               # install deps and download models only"
     echo ""
     echo "Options (passed through to hl-validate):"
-    echo "  --output, -o DIR    Output directory (default: ml_checks/results)"
+    echo "  --output, -o DIR    Output directory (default: bachman_cortex/results)"
     echo "  --fps N             Sampling FPS (default: 1.0)"
     echo "  --max-frames N      Max frames to sample per video"
     echo "  --no-gdino          Disable Grounding DINO (faster)"
@@ -212,7 +212,7 @@ pip install -e "$SCRIPT_DIR" --quiet 2>/dev/null
 # ─────────────────────────────────────────────────────────────
 
 info "Checking model weights..."
-python "$SCRIPT_DIR/ml_checks/models/download_models.py"
+python "$SCRIPT_DIR/bachman_cortex/models/download_models.py"
 
 # ─────────────────────────────────────────────────────────────
 # Step 8: Run pipeline (or exit if --setup-only)

@@ -4,8 +4,8 @@ Criterion: Sensitive objects detected = 0 in ALL frames.
 Purpose: Data privacy compliance.
 """
 
-from ml_checks.checks.check_results import CheckResult
-from ml_checks.models.grounding_dino_detector import ZeroShotDetection
+from bachman_cortex.checks.check_results import CheckResult
+from bachman_cortex.models.grounding_dino_detector import ZeroShotDetection
 
 
 def _seconds_to_hhmmss(seconds: float) -> str:

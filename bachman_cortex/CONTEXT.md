@@ -77,7 +77,7 @@ See [checks.md](../checks.md) for full acceptance conditions and thresholds.
 - **Predecessor to Hands23.** Trained on 131 days of real-world egocentric footage. 90.46% Box AP.
 - Requires custom C++ extension compilation (fragile across Python/PyTorch versions).
 - **Speed:** ~5,141ms/frame CPU (~3.5x slower than Hands23).
-- Available via `./validate.sh --100doh` or `python ml_checks/models/download_models.py --100doh`.
+- Available via `./validate.sh --100doh` or `python bachman_cortex/models/download_models.py --100doh`.
 
 #### Grounding DINO (Privacy — Check 5)
 - **Why:** Zero-shot detection of arbitrary text-described objects ("credit card", "ID card", "paper document") without any fine-tuning or training data. 52.5 AP zero-shot on COCO — SOTA.
@@ -246,7 +246,7 @@ hl-bachman/
 ├── pyproject.toml                      # Package configuration (hl-video-validation)
 ├── checks.md                           # Check specifications and thresholds
 ├── README.md
-└── ml_checks/
+└── bachman_cortex/
     ├── __init__.py
     ├── pipeline.py                     # ValidationPipeline orchestrator
     ├── run_batch.py                    # CLI entry point (hl-validate)

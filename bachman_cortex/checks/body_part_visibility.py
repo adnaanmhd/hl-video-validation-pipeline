@@ -7,13 +7,13 @@ Uses YOLO11m-pose keypoint detection to identify which body parts are visible.
 """
 
 import numpy as np
-from ml_checks.checks.check_results import CheckResult
-from ml_checks.models.yolo_pose_detector import (
+from bachman_cortex.checks.check_results import CheckResult
+from bachman_cortex.models.yolo_pose_detector import (
     PoseDetection,
     ALLOWED_WEARER_KEYPOINTS,
     KEYPOINT_NAMES,
 )
-from ml_checks.models.hand_detector import HandDetection
+from bachman_cortex.models.hand_detector import HandDetection
 
 
 def _is_wearer_pose(

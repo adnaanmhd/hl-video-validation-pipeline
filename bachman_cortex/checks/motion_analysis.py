@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-from ml_checks.checks.check_results import CheckResult
+from bachman_cortex.checks.check_results import CheckResult
 
 
 def _compute_ssim_gray(img1: np.ndarray, img2: np.ndarray) -> float:

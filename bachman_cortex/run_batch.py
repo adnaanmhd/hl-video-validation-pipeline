@@ -3,16 +3,16 @@
 
 Usage:
     # Single video
-    python -m ml_checks.run_batch /path/to/video.mp4
+    python -m bachman_cortex.run_batch /path/to/video.mp4
 
     # Multiple videos
-    python -m ml_checks.run_batch /path/to/video1.mp4 /path/to/video2.mp4
+    python -m bachman_cortex.run_batch /path/to/video1.mp4 /path/to/video2.mp4
 
     # Directory of videos
-    python -m ml_checks.run_batch /path/to/videos/
+    python -m bachman_cortex.run_batch /path/to/videos/
 
     # With options
-    python -m ml_checks.run_batch /path/to/videos/ --fps 2 --max-frames 50 --no-gdino --output results/
+    python -m bachman_cortex.run_batch /path/to/videos/ --fps 2 --max-frames 50 --no-gdino --output results/
 """
 
 import argparse
@@ -30,8 +30,8 @@ from multiprocessing import Pool
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ml_checks.pipeline import ValidationPipeline, PipelineConfig
-from ml_checks.utils.video_metadata import get_video_metadata
+from bachman_cortex.pipeline import ValidationPipeline, PipelineConfig
+from bachman_cortex.utils.video_metadata import get_video_metadata
 
 
 # Check display names grouped by category
@@ -360,20 +360,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m ml_checks.run_batch video.mp4
-  python -m ml_checks.run_batch videos_dir/
-  python -m ml_checks.run_batch *.mp4 --output results/
-  python -m ml_checks.run_batch videos/ --fps 2 --max-frames 100 --no-gdino
+  python -m bachman_cortex.run_batch video.mp4
+  python -m bachman_cortex.run_batch videos_dir/
+  python -m bachman_cortex.run_batch *.mp4 --output results/
+  python -m bachman_cortex.run_batch videos/ --fps 2 --max-frames 100 --no-gdino
         """,
     )
     parser.add_argument("paths", nargs="+", help="Video files or directories to process (.mp4 only)")
-    parser.add_argument("--output", "-o", default="ml_checks/results", help="Output directory for reports (default: ml_checks/results)")
+    parser.add_argument("--output", "-o", default="bachman_cortex/results", help="Output directory for reports (default: bachman_cortex/results)")
     parser.add_argument("--fps", type=float, default=1.0, help="Frame sampling rate in FPS (default: 1.0)")
     parser.add_argument("--max-frames", type=int, default=None, help="Max frames to sample per video (default: no limit)")
     parser.add_argument("--no-gdino", action="store_true", help="Disable Grounding DINO (faster, but no fine-grained privacy detection)")
-    parser.add_argument("--hand-detector-repo", default="ml_checks/models/weights/hands23_detector", help="Path to Hands23 repo")
-    parser.add_argument("--scrfd-root", default="ml_checks/models/weights/insightface", help="Path to InsightFace models")
-    parser.add_argument("--gdino-cache", default="ml_checks/models/weights/grounding_dino", help="Path to Grounding DINO cache")
+    parser.add_argument("--hand-detector-repo", default="bachman_cortex/models/weights/hands23_detector", help="Path to Hands23 repo")
+    parser.add_argument("--scrfd-root", default="bachman_cortex/models/weights/insightface", help="Path to InsightFace models")
+    parser.add_argument("--gdino-cache", default="bachman_cortex/models/weights/grounding_dino", help="Path to Grounding DINO cache")
     parser.add_argument("--fail-fast", action="store_true", default=False, help="Skip ML inference when quality checks fail")
     parser.add_argument("--workers", type=int, default=0, help="Parallel video workers (0=auto-detect, 1=sequential)")
     parser.add_argument("--yolo-model", default="yolo11s.pt", help="YOLO model for object detection (default: yolo11s.pt)")

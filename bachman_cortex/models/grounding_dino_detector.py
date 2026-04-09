@@ -31,7 +31,7 @@ class GroundingDINODetector:
     def __init__(
         self,
         model_id: str = "IDEA-Research/grounding-dino-base",
-        cache_dir: str | Path = "ml_checks/models/weights/grounding_dino",
+        cache_dir: str | Path = "bachman_cortex/models/weights/grounding_dino",
         device: str | None = None,
     ):
         from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
