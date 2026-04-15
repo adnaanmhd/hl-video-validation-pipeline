@@ -167,6 +167,7 @@ def find_segments(labels: list[str]) -> list[Segment]:
 def check_luminance_blur(
     frames: list[np.ndarray],
     config: LuminanceBlurConfig | None = None,
+    timestamps: list[float] | None = None,
 ) -> CheckResult:
     """Run luminance/blur classification on all frames with segment analysis.
 
@@ -211,13 +212,25 @@ def check_luminance_blur(
         if m.reject_reason:
             reject_reasons[m.reject_reason] = reject_reasons.get(m.reject_reason, 0) + 1
 
+    review_frame_records: list[dict] = []
+    if timestamps is not None:
+        for i, m in enumerate(all_metrics):
+            if m.label != "review" or i >= len(timestamps):
+                continue
+            review_frame_records.append({
+                "timestamp_sec": timestamps[i],
+                "mean_luminance": round(m.mean_luminance, 2),
+                "tenengrad_norm": round(m.tenengrad_norm, 4),
+                "tenengrad_raw": round(m.tenengrad_raw, 2),
+            })
+
     return CheckResult(
         status=status,
         metric_value=round(good_ratio, 4),
         confidence=1.0,
         details={
             "accept_frames": accept_count,
-            "review_frames": review_count,
+            "review_frames_count": review_count,
             "reject_frames": reject_count,
             "total_frames": len(frames),
             "good_ratio": round(good_ratio, 4),
@@ -230,5 +243,6 @@ def check_luminance_blur(
                 {"start": s.start, "end": s.end, "kind": s.kind, "length": s.length}
                 for s in segments
             ],
+            "review_frames": review_frame_records,
         },
     )

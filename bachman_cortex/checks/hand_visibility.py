@@ -30,6 +30,8 @@ def check_hand_visibility(
     both_hands_pass_rate: float = 0.80,
     single_hand_pass_rate: float = 0.90,
     frame_margin: int = 2,
+    review_threshold: float = 0.5,
+    timestamps: list[float] | None = None,
 ) -> CheckResult:
     """Check hand visibility using an OR of two sub-conditions.
 
@@ -64,11 +66,17 @@ def check_hand_visibility(
     single_hand_frames = 0
     both_hands_by_side = 0
     clipped_frames = 0
+    review_frames: list[dict] = []
 
-    for hands in per_frame_hands:
-        confident_hands = [h for h in hands if h.confidence >= confidence_threshold]
-        in_frame_hands = [h for h in confident_hands
-                          if _hand_in_frame(h.bbox, frame_w, frame_h, frame_margin)]
+    for idx, hands in enumerate(per_frame_hands):
+        # Review as accept: the qualifying-hand pool includes conf >= review_threshold.
+        qualifying_hands = [
+            h for h in hands if h.confidence >= review_threshold
+        ]
+        in_frame_hands = [
+            h for h in qualifying_hands
+            if _hand_in_frame(h.bbox, frame_w, frame_h, frame_margin)
+        ]
 
         has_left = any(h.side == HandSide.LEFT for h in in_frame_hands)
         has_right = any(h.side == HandSide.RIGHT for h in in_frame_hands)
@@ -81,8 +89,20 @@ def check_hand_visibility(
             both_hands_by_side += 1
         if in_frame_hands:
             single_hand_frames += 1
-        if len(confident_hands) >= 2 and len(in_frame_hands) < 2:
+        if len(qualifying_hands) >= 2 and len(in_frame_hands) < 2:
             clipped_frames += 1
+
+        # Review tracking: in-frame hands in [review_threshold, confidence_threshold).
+        review_band = [
+            h for h in in_frame_hands
+            if review_threshold <= h.confidence < confidence_threshold
+        ]
+        if review_band and timestamps is not None and idx < len(timestamps):
+            max_conf = max(h.confidence for h in review_band)
+            review_frames.append({
+                "timestamp_sec": timestamps[idx],
+                "confidence": max_conf,
+            })
 
     both_ratio = both_hands_frames / total_frames
     single_ratio = single_hand_frames / total_frames
@@ -118,6 +138,8 @@ def check_hand_visibility(
             "both_hands_passed": both_passed,
             "single_hand_passed": single_passed,
             "confidence_threshold": confidence_threshold,
+            "review_threshold": review_threshold,
             "frame_margin_px": frame_margin,
+            "review_frames": review_frames,
         },
     )

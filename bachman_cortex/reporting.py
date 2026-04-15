@@ -17,6 +17,12 @@ from bachman_cortex.data_types import (
     SegmentValidationResult,
 )
 from bachman_cortex.pipeline import PipelineConfig
+from bachman_cortex.utils.review_runs import ReviewRun, collapse_review_runs
+
+
+_FACE_REVIEW_LO = 0.5
+_FACE_REVIEW_HI = 0.8
+_REVIEW_MIN_DURATION_S = 2.0
 
 
 # ── Timeline entry ───────────────────────────────────────────────────────
@@ -275,6 +281,154 @@ def _timeline_table(entries: list[TimelineEntry]) -> list[str]:
     return lines
 
 
+# ── Review frames (per-video) ────────────────────────────────────────────
+
+
+def _collect_face_review_frames(
+    result: VideoProcessingResult,
+    frame_interval: float,
+) -> list[dict]:
+    """Face-presence review frames from Phase 1 across the whole video."""
+    face_cfr = next(
+        (c for c in result.phase1_check_frame_results
+         if c.check_name == "ml_face_presence"),
+        None,
+    )
+    if face_cfr is None:
+        return []
+
+    records: list[dict] = []
+    for fl in face_cfr.frame_labels:
+        conf = fl.confidence
+        if not (_FACE_REVIEW_LO <= conf < _FACE_REVIEW_HI):
+            continue
+        records.append({
+            "timestamp_sec": fl.timestamp_sec,
+            "confidence": conf,
+        })
+    return records
+
+
+def _collect_segment_review_frames(
+    result: VideoProcessingResult,
+    check_name: str,
+) -> list[dict]:
+    """Aggregate per-segment review_frames from all Phase 2 segments."""
+    records: list[dict] = []
+    for sr in result.segment_results:
+        cr = (sr.check_results or {}).get(check_name)
+        if cr is None:
+            continue
+        records.extend((cr.details or {}).get("review_frames", []))
+    return records
+
+
+def _fmt_triple(agg: tuple[float, float, float] | None, decimals: int = 2) -> str:
+    if agg is None:
+        return "-"
+    mean, lo, hi = agg
+    return f"{mean:.{decimals}f} / {lo:.{decimals}f} / {hi:.{decimals}f}"
+
+
+def _review_run_table(
+    runs: list[ReviewRun],
+    columns: list[tuple[str, str, int]],
+) -> list[str]:
+    """Render a review-runs table.
+
+    columns: list of (header_label, aggregate_key, decimals) for value columns.
+    """
+    headers = ["Start", "End", "Duration", "Frames"] + [c[0] for c in columns]
+    lines = ["| " + " | ".join(headers) + " |"]
+    lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+    for r in runs:
+        row = [
+            _fmt_ts(r.start_sec),
+            _fmt_ts(r.end_sec),
+            f"{r.duration:.3f}s",
+            str(r.frame_count),
+        ]
+        for _label, key, decimals in columns:
+            row.append(_fmt_triple(r.aggregates.get(key), decimals))
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+    return lines
+
+
+def _review_section(
+    result: VideoProcessingResult,
+    frame_interval: float,
+) -> list[str]:
+    """Render the 'Frames Flagged for Review' section."""
+    lines: list[str] = []
+
+    specs = [
+        (
+            "ml_face_presence",
+            _collect_face_review_frames(result, frame_interval),
+            [("Conf (mean / min / max)", "confidence", 2)],
+        ),
+        (
+            "ml_hand_visibility",
+            _collect_segment_review_frames(result, "ml_hand_visibility"),
+            [("Conf (mean / min / max)", "confidence", 2)],
+        ),
+        (
+            "ml_hand_object_interaction",
+            _collect_segment_review_frames(result, "ml_hand_object_interaction"),
+            [("Conf (mean / min / max)", "confidence", 2)],
+        ),
+        (
+            "luminance_blur",
+            _collect_segment_review_frames(result, "luminance_blur"),
+            [
+                ("Mean Luminance (mean / min / max)", "mean_luminance", 2),
+                ("Norm. Tenengrad (mean / min / max)", "tenengrad_norm", 4),
+                ("Raw Tenengrad (mean / min / max)", "tenengrad_raw", 2),
+            ],
+        ),
+    ]
+
+    all_runs: dict[str, list[ReviewRun]] = {}
+    any_runs = False
+    for name, frames, columns in specs:
+        value_keys = [c[1] for c in columns]
+        runs = collapse_review_runs(
+            frames,
+            frame_interval=frame_interval,
+            min_duration_s=_REVIEW_MIN_DURATION_S,
+            value_keys=value_keys,
+        )
+        all_runs[name] = runs
+        if runs:
+            any_runs = True
+
+    if not any_runs:
+        return lines
+
+    lines.append("---")
+    lines.append("")
+    lines.append("## Frames Flagged for Review")
+    lines.append("")
+    lines.append(
+        f"Contiguous review runs strictly longer than {_REVIEW_MIN_DURATION_S:g}s "
+        "per check. These frames **count as accept** for pass/fail; "
+        "this section is for manual QA only."
+    )
+    lines.append("")
+
+    for name, _frames, columns in specs:
+        runs = all_runs[name]
+        if not runs:
+            continue
+        total_dur = sum(r.duration for r in runs)
+        lines.append(f"### {name} — {len(runs)} range(s), {total_dur:.1f}s")
+        lines.append("")
+        lines.extend(_review_run_table(runs, columns))
+
+    return lines
+
+
 # ── Per-video report ─────────────────────────────────────────────────────
 
 
@@ -356,6 +510,11 @@ def write_video_report(
         entries = _build_timeline(result)
 
     lines.extend(_timeline_table(entries))
+
+    # ── Frames Flagged for Review ────────────────────────────────────
+    if config is not None and result.metadata_passed:
+        frame_interval = 1.0 / config.sampling_fps if config.sampling_fps else 1.0
+        lines.extend(_review_section(result, frame_interval))
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path

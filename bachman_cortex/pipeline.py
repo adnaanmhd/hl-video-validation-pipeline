@@ -603,6 +603,9 @@ class ValidationProcessingPipeline:
         seg_frames = phase1_cache['frames'][start_idx:end_idx]
         per_frame_hands = phase1_cache['per_frame_hands'][start_idx:end_idx]
         per_frame_faces = phase1_cache['per_frame_faces'][start_idx:end_idx]
+        seg_timestamps = [
+            i / self.config.sampling_fps for i in range(start_idx, end_idx)
+        ]
 
         # Bboxes in the phase1 cache are in Phase-1 coordinates (720p
         # long-edge by default; see phase1_long_edge). Use those dims so
@@ -652,7 +655,7 @@ class ValidationProcessingPipeline:
             max_brightness_std=self.config.max_brightness_std,
         )
         check_results["luminance_blur"] = check_luminance_blur(
-            seg_frames, config=lb_config,
+            seg_frames, config=lb_config, timestamps=seg_timestamps,
         )
 
         # Hand visibility: both-hands >=80% OR single-hand >=90%
@@ -663,12 +666,14 @@ class ValidationProcessingPipeline:
             both_hands_pass_rate=self.config.hand_pass_rate,
             single_hand_pass_rate=self.config.single_hand_pass_rate,
             frame_margin=self.config.hand_frame_margin,
+            timestamps=seg_timestamps,
         )
 
         # Hand-object interaction (Phase 2 threshold: 0.60)
         check_results["ml_hand_object_interaction"] = check_hand_object_interaction(
             per_frame_hands,
             pass_rate_threshold=self.config.interaction_pass_rate,
+            timestamps=seg_timestamps,
         )
 
         # View obstruction

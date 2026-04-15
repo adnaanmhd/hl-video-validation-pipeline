@@ -46,6 +46,7 @@ class HandDetection:
     confidence: float
     side: HandSide
     contact_state: ContactState
+    contact_state_confidence: float = 0.0  # Hands23: dz[9] interaction score
     grasp_type: str | None = None  # Hands23 only: e.g. "NP-Palm", "Pow-Pris", etc.
     offset_vector: np.ndarray | None = None  # 100DOH only
 
@@ -218,6 +219,8 @@ class HandObjectDetectorHands23:
                 contact_idx = int(dz[8])
                 contact_state = HANDS23_CONTACT_MAP.get(contact_idx, ContactState.NO_CONTACT)
 
+                contact_conf = float(dz[9])
+
                 grasp_idx = int(dz[6])
                 grasp_type = HANDS23_GRASP_NAMES.get(grasp_idx)
 
@@ -226,6 +229,7 @@ class HandObjectDetectorHands23:
                     confidence=conf,
                     side=side,
                     contact_state=contact_state,
+                    contact_state_confidence=contact_conf,
                     grasp_type=grasp_type,
                 ))
             elif cls in (1, 2):
