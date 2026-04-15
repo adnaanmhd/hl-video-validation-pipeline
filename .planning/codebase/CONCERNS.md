@@ -4,450 +4,624 @@
 
 ## Tech Debt
 
-### Grounding DINO is an architectural bottleneck (Medium Priority)
+### Dead Code: Deleted ML Checks (Active Refactoring)
 
-**Issue:** Grounding DINO (200M-parameter foundation model) spends 112.5s (50% of pipeline) detecting 4 fixed object classes in the privacy check, while YOLO11s detects 80 COCO classes in 1.2s. The model's zero-shot strength is completely wasted on fixed-class detection.
+**What's happening:**
+Git status shows recent deletions of five check files:
+- `bachman_cortex/checks/body_part_visibility.py` (deleted)
+- `bachman_cortex/checks/frame_quality.py` (deleted)
+- `bachman_cortex/checks/privacy_safety.py` (deleted)
+- `bachman_cortex/models/grounding_dino_detector.py` (deleted)
+- `bachman_cortex/models/yolo_pose_detector.py` (deleted)
 
-**Files:** `bachman_cortex/models/grounding_dino_detector.py`, `bachman_cortex/pipeline.py:407-413` (GDINO thread synchronization)
+**Impact:**
+These deletions represent an intentional architecture redesign documented in OPTIMIZATION_PLAN_V3.md. Three checks (privacy, egocentric perspective, body-part visibility) moved behind opt-in CLI flags (`--privacy-check`, `--egocentric-check`, `--body-part-visibility`). They are no longer on the default hot path but remain conditional. YOLO-pose is only loaded when those checks are enabled, saving ~4-5s of model load on default runs.
 
-**Impact:** Privacy check is disabled by default (`--privacy-check` opt-in) to avoid regressing default-config throughput. When enabled on 180s clips, doubles processing time (~100s → ~200s).
+**Status:** This is intentional optimization work, not legacy code. However, references to deleted modules may still exist in codebase.
 
-**Fix approach:** Replace GDINO with a fine-tuned YOLO11n on 6 privacy classes (credit_card, id_card, pii_document, screen_mobile, screen_laptop, screen_monitor). Bootstrap training data from GDINO detections on real egocentric footage (~500-1000 examples/class). Expected result: ~112.5s → ~2-3s. Detailed plan in `YOLOV5N_FINETUNE_PLAN.md` (phases 1-5 documented; phase 6 integration template ready).
-
----
-
-### Motion analysis still re-opens video per clip (Latent, now fixed)
-
-**Issue:** Motion analysis in Phase 2 used to re-open the video file via `cv2.VideoCapture` for each clip, causing ~2x CPU decode overhead (one full decode in Phase 1 extraction, another in Phase 2).
-
-**Files:** `bachman_cortex/checks/motion_analysis.py:597` (old code)
-
-**Status:** FIXED (2026-04-13). Replaced with `MotionAnalyzer` stateful accumulator that tees the native-rate decode stream inline during extraction. Phase 2 motion checks slice pre-computed results without re-decoding.
-
-**Observed impact:** LATAM 501s clip: extraction 46.6s → 32.8s (with NVDEC), end-to-end 133s → 116s (13% total cut).
+**Action:** Verify no import statements reference the deleted modules in unconditional code paths.
 
 ---
 
-### Phase 1 frame cache still holds full-resolution frames (Fixed, resizing pending validation)
+### Custom OpenCV Build with Missing DNN Module
 
-**Issue:** Phase 1 used to cache all native-resolution frames (e.g., 1.1GB for 180 frames @ 1080p) in memory until Phase 2 completed.
+**Files:** `bachman_cortex/_cv2_dnn_shim.py` (new), `bachman_cortex/__init__.py` (modified)
 
-**Files:** `bachman_cortex/pipeline.py:654-659` (cache structure)
+**Problem:**
+Custom CUDA-enabled OpenCV build was compiled with `BUILD_opencv_dnn=OFF` to work around a CMake/OpenCV 4.10 bug (`pyopencv_dnn.hpp` fails on gcc-12). This removes `cv2.dnn` entirely. Since `insightface` depends on `cv2.dnn.blobFromImage` for SCRFD preprocessing, a shim was created (`_cv2_dnn_shim.py`) that patches pure-numpy implementations into the `cv2.dnn` namespace.
 
-**Status:** FIXED (2026-04-13). Phase 1 downscales all frames to 720p long-edge at entry (`PipelineConfig.phase1_long_edge=720` default); cache stores 720p frames only. Phase 1 peak memory halved (~1.1GB → ~475MB).
+**Risk:**
+- **Fragility**: The shim must be installed before any `insightface` import (happens in `__init__.py`). If load order changes, `insightface` fails.
+- **Maintainability**: The shim is architecture-specific to this one OpenCV build. Upgrading OpenCV or switching to a standard PyPI build will break it silently if not reimported.
+- **Numpy path mismatch**: The shim uses `np.transpose()` for NCHW layout; any future insightface version that expects stricter tensor properties may fail.
 
-**Risk:** Face recall on LATAM samples must be re-validated at 720p. No regressions observed in smoke tests so far. Fallback: set `phase1_long_edge=None` to disable, or `phase1_long_edge=900` for middle-ground.
+**Mitigation in place:** `__init__.py` imports `_cv2_dnn_shim` and calls `.install()` before importing insightface. Clear comments explain why.
 
----
-
-### GDINO parallel thread synchronization is brittle (Medium Priority)
-
-**Issue:** GDINO runs in a background thread gated on `_gdino_skip_ready` event (`pipeline.py:407-413`). The event is set **after** the face/participant inner loop completes, forcing GDINO to wait until Phase 1 is done, then run sequentially. Even when privacy is enabled, GDINO is not truly parallel.
-
-**Files:** `bachman_cortex/pipeline.py:407-413, 555-557`
-
-**Impact:** GDINO processing adds wall-clock time sequentially (when enabled). Intended as an optimization but doesn't achieve the goal.
-
-**Fix approach:** Move `_gdino_skip_ready.set()` to just after YOLO batch completes (not after the full face/participant loop). Alternatively, populate the skip set lazily as face/participant results become available, allowing GDINO to start earlier.
+**Future risk:** When OpenCV upstream fixes the CMake bug, remove the shim and standard `cv2.dnn` will be available.
 
 ---
 
-### Phase 1 inner loop still serializes SCRFD and Hands23 (Partially optimized)
+### Hands23 Hardcoded `.cuda()` Calls Patched at Runtime
 
-**Issue:** YOLO gets batched inference; SCRFD and Hands23 remain per-frame on a single CUDA stream. The Phase 1 inner loop processes 16-frame batches serially for face/hand detection.
+**Files:** `bachman_cortex/models/download_models.py` (lines 103-160, CPU compatibility patching)
 
-**Files:** `bachman_cortex/pipeline.py:497-506` (inner loop), `bachman_cortex/pipeline.py:499-500` (SCRFD dispatch)
+**Problem:**
+Hands23 upstream code has hardcoded `.cuda()` calls. The download script automatically patches these to device-aware `.to(device)` during setup (`patch_hands23_cuda_calls()`). This is applied at download time, not import time.
 
-**Status:** PARTIALLY OPTIMIZED (2026-04-13). SCRFD now dispatches to a `ThreadPoolExecutor` (4 workers default), but Hands23 remains per-frame. Expected ~1.2x Phase 1 speedup from SCRFD overlap.
+**Risk:**
+- If a user re-clones the hands23 repo from upstream, the patch is lost and CPU runs fail.
+- The patch is brittle — applied via string replacement on Python source files. If upstream code structure changes, the regex may not match.
+- **Not documented in CONTEXT.md or README** — a user who manually updates Hands23 will not know to re-run the patcher.
 
-**Remaining work:** Batch Hands23 detection per frame group if the Detectron2 predictor API supports it. Currently unprofiled; may already be near-optimal given Hands23's Faster R-CNN architecture.
-
----
-
-### SSL certificate verification disabled for model downloads (Security Low Risk)
-
-**Issue:** Hands23 weights download disables SSL verification (`--no-check-certificate` in wget, `ctx.check_hostname = False` + `ctx.verify_mode = ssl.CERT_NONE` in urllib).
-
-**Files:** `bachman_cortex/models/download_models.py:74-84`
-
-**Why:** The fouheylab.eecs.umich.edu SSL certificate is not recognized by some Python environments (certificate chain issue).
-
-**Mitigation:** This is a one-time download, not a production attack surface. The project runs locally only (no exposed APIs). Download happens at CLI invocation or in CI — not in production inference. Hash-verify the downloaded weights file size (`weight_file.stat().st_size / 1024 / 1024`) matches the expected 400MB before continuing.
-
-**Better fix:** Contact fouheylab to fix their certificate, or mirror weights to a CDN with valid chain. For now, add a warning + size-check assertion.
-
----
-
-### OpenCV-CUDA build is fragile (Medium Risk)
-
-**Issue:** The custom OpenCV build requires:
-  1. CUDA toolkit + build deps (must be installed with sudo)
-  2. NVIDIA Video Codec SDK 12.x extracted to a known path (user-provisioned, not automated)
-  3. CMake 4.x compatibility patches (CMAKE_POLICY_VERSION_MINIMUM=3.5)
-  4. `gcc-12` pinning (CUDA 12.0 nvcc rejects gcc 13+)
-  5. `BUILD_opencv_dnn=OFF` due to unresolved `dnn::` namespace (OpenCV 4.10 + CMake 4.x bug)
-
-**Files:** `scripts/install_opencv_cuda.sh`, `bachman_cortex/_cv2_dnn_shim.py` (shim workaround)
-
-**Impact:** One-time ~60 minute build per host. Falls back gracefully to CPU LK + CPU ffmpeg decode if CUDA path is unavailable.
-
-**Fragility:**
-  - If CUDA toolkit or Codec SDK is not installed, the build silently skips CUDA features rather than failing loud.
-  - The shim (`_cv2_dnn_shim.py`) patches `cv2.dnn` if DNN module is missing — correct, but unusual pattern that could confuse future maintainers.
-  - CMake 4.x support in OpenCV 4.10 is borderline; later OpenCV 4.11+ may break the script.
-
-**Mitigation:** Document the one-time cost in README (done). Add CI/docker image pre-built with CUDA. Ship binary wheels for common distributions.
-
----
-
-### `cv2.dnn` shim is an unusual compatibility pattern (Low Risk, Documented)
-
-**Issue:** When the custom OpenCV build disables `BUILD_opencv_dnn`, the only project dependency that needs `cv2.dnn.blobFromImage` — insightface's SCRFD preprocessing — would fail. The project works around this by installing a pure-numpy shim at module import time.
-
-**Files:** `bachman_cortex/_cv2_dnn_shim.py`, `bachman_cortex/__init__.py` (calls `install()`)
-
-**Pattern:** Monkey-patches `cv2.dnn` module if functions are missing. Idempotent and backward-compatible.
-
-**Risk:** This is a fragile compatibility pattern that assumes:
-  1. insightface calls `cv2.dnn.blobFromImage` (not `cv2.dnn_blobFromImage` or some variant)
-  2. insightface never calls DNN inference via cv2 (it uses ORT instead)
-  3. Future versions of insightface don't add new cv2.dnn dependencies
-
-**Mitigation:** Already documented in `CONTEXT.md:314-329`. Add runtime assertion at pipeline start to verify `cv2.dnn.blobFromImage` exists and is callable.
+**Mitigation:** The patch is applied in `download_models.py` and only runs once. But there's no automated check to verify the patch is in place.
 
 ---
 
 ## Known Bugs
 
-### CUDA LK optical flow initialization fails on some hosts (Latent, Auto-Fallback)
+### TODO Marker in Hands23 Weight Preprocessor (Not Critical)
 
-**Symptoms:** `motion_analysis._CUDA_LK` = False even when `cv2.cuda.getCudaEnabledDeviceCount() > 0`. Motion analysis runs on CPU instead of GPU.
+**File:** `bachman_cortex/models/weights/hands23_detector/data_prep/data_util.py:208`
 
-**Files:** `bachman_cortex/checks/motion_analysis.py:62-68`
+**Comment:**
+```python
+scalar = 1000 # TODO: the scalar needs testing
+```
 
-**Trigger:** The smoke test `cv2.cuda.SparsePyrLKOpticalFlow.create()` raises `cv2.error` (caught silently), causing `_CUDA_LK` to remain False.
-
-**Workaround:** Pipeline automatically uses CPU LK as fallback. User can check whether GPU acceleration is active by examining logged extraction metadata (`backend: "nvdec" | "cpu"`).
-
-**Investigation needed:** Print the specific `cv2.error` message to help diagnose why CUDA initialization fails. Current code swallows the exception.
-
----
-
-### NVDEC frame download is GPU↔CPU sync point (Performance, Known)
-
-**Issue:** Even with NVDEC hardware decode, frames must be downloaded from GPU to CPU at sampling points (`frame_extractor.py:113`). This is a GPU↔CPU synchronization point that can stall the pipeline if CUDA operations are not properly pipelined.
-
-**Files:** `bachman_cortex/utils/frame_extractor.py:113` (download call)
-
-**Impact:** Measured benefit of NVDEC is ~13% total (extraction 46.6s → 32.8s on LATAM 501s clip), not the 3-4x that pure NVDEC decoding might suggest. CPU is likely blocking on GPU downloads.
-
-**Investigation:** Profile with `nvprof` or `nsys` to check for stalls. Possible fix: pre-allocate pinned CPU memory buffers and use CUDA async downloads.
-
----
-
-### FFprobe subprocess call has no timeout (Low Risk)
-
-**Issue:** `video_metadata.py:23` calls `subprocess.run(ffprobe_cmd)` with no timeout. If ffprobe hangs (corrupted video, slow filesystem), the pipeline blocks indefinitely.
-
-**Files:** `bachman_cortex/utils/video_metadata.py:23`
-
-**Impact:** Batch processing could hang per video.
-
-**Fix:** Add `timeout=30` parameter to subprocess.run.
+**Impact:** Low. This is in data preprocessing for training, not the inference path. The scalar is used during dataset preparation, not at validation time.
 
 ---
 
 ## Security Considerations
 
-### Model download URLs are unvalidated (Low Risk, HTTP only)
+### Subprocess Calls to FFmpeg without Shell Escaping
 
-**Issue:** Model weights are downloaded from URLs without hash verification:
-  - `insightface`: Fetched dynamically by `FaceAnalysis` (vendor-controlled)
-  - YOLO11s: Fetched dynamically by Ultralytics (vendor-controlled)
-  - Hands23: Manual URL in `download_models.py:72` (HTTP, fouheylab.eecs.umich.edu)
-  - 100DOH: Google Drive URL via gdown (redirects)
+**Files:**
+- `bachman_cortex/utils/video_metadata.py:23-29` (`ffprobe` subprocess call)
+- `bachman_cortex/utils/transcode.py:106` (`ffmpeg` subprocess call)
 
-**Files:** `bachman_cortex/models/download_models.py:72,176`
+**Current approach:**
+Both calls use `subprocess.run()` with a list of arguments (not shell=True), which is safe from injection. File paths are passed through string conversion and included in the command array directly.
 
-**Mitigation:** All downloads are one-time, run locally, by trusted developers. No production inference downloads models. Cache model files after first download — weights directory is never re-downloaded unless manually deleted.
+**Risk assessment:**
+- ✅ **Safe**: List-form subprocess.run() prevents shell injection.
+- ⚠️ **Precondition**: Video file paths must be validated before reaching these functions. If paths come from untrusted sources (e.g., URL parameters in a web service), symlink attacks or malicious filenames could cause issues.
 
-**Better fix:** Publish SHA256 hashes of expected weights (20 bytes each) in the repo. Verify after download: `openssl dgst -sha256 weights.pt`.
+**Current safeguards:**
+- `run_batch.py` validates files via `collect_videos()` — only .mp4 files in user-provided directories
+- No remote URL downloads (only local file paths)
+- No dynamic path construction from user input
 
----
-
-### Path handling in transcode outputs (Medium Risk)
-
-**Issue:** `transcode.py:77` builds output path without validating `video_path` input:
-  ```python
-  output_path = preprocessed_dir / f"{Path(video_path).stem}.mp4"
-  ```
-
-If `video_path` contains a string like `../../../etc/passwd`, the `.stem` extraction is safe, but if a symlink traversal or path traversal attack exists elsewhere, this could be exploited.
-
-**Files:** `bachman_cortex/utils/transcode.py:77`
-
-**Mitigation:** The function already receives `video_path` from trusted CLI sources (collect_videos validates paths). No user-controlled input is interpolated. Risk is low but path should be resolved to absolute path: `Path(video_path).resolve()` before use.
+**Recommendation:** If this code is ever exposed to web input, add explicit path validation:
+```python
+from pathlib import Path
+video_path = Path(video_path).resolve()  # Canonicalize; raises if symlink loops
+if not video_path.exists():
+    raise ValueError(f"File does not exist: {video_path}")
+```
 
 ---
 
-### Subprocess calls use shell=False (Secure)
+### Model Download URL Security
 
-**Issue:** None. All subprocess calls in the codebase use `shell=False` and pass command lists, not strings. This prevents shell injection.
+**File:** `bachman_cortex/models/download_models.py:72` (Hands23 weights download)
 
-**Files:** `transcode.py:106`, `video_metadata.py:23`, `download_models.py:58,96,156,184`
+**Issue:**
+The Hands23 model weights are downloaded from `https://fouheylab.eecs.umich.edu/...` via `wget --no-check-certificate` or `curl -k`. The `--no-check-certificate` / `-k` flags disable SSL verification.
+
+**Justification:** Server SSL certificate was failing with Python's strict verification in the past.
+
+**Risk:**
+- **MITM vulnerability**: On untrusted networks, disabling SSL verification allows attacker-in-the-middle attacks to inject malicious model weights.
+- **Silent failure**: If the server certificate is actually bad, no user-facing error is raised — the insecure download happens silently.
+
+**Mitigation:**
+- This is a one-time download during setup (`download_models.py`), not part of the validation pipeline.
+- The weights file is large (~400MB) and would be noticeable if corrupted.
+- Recommend: Update the URL or request the upstream maintainer fix their SSL certificate.
+
+**Recommendation:**
+```python
+# Instead of --no-check-certificate:
+try:
+    subprocess.run(["wget", "-O", str(weight_file), url], check=True)
+except subprocess.CalledProcessError:
+    # Fall back to Python urllib with proper certificate handling
+    import urllib.request
+    urllib.request.urlretrieve(url, str(weight_file))
+```
 
 ---
 
 ## Performance Bottlenecks
 
-### Hands23 is the residual bottleneck on CPU (Medium Priority)
+### Hands23 is the Residual Bottleneck on Default Config
 
-**Problem:** Hands23 runs at ~1,400ms/frame on CPU. For a 180-frame 1-FPS sample, this is ~210 seconds of the pipeline. Phase 1 + Phase 2 are heavily dominated by Hands23.
+**Files:** `bachman_cortex/pipeline.py:759-765` (Phase 2 pose loop, now conditional), `bachman_cortex/models/hand_detector.py`
 
-**Files:** `bachman_cortex/models/hand_detector.py`, `bachman_cortex/pipeline.py:753-757` (Phase 2 call)
+**Current cost:**
+Per `OPTIMIZATION_PLAN_V3.md`, after P0 + P1 optimizations (gating pose on flags, single-pass decode, phase1 720p downscale):
+- Hands23 inference: ~30-40s per 180s clip
+- Motion analysis (GPU LK): ~15s
+- Other: ~10-15s
+- **Total:** ~60s for a default 180s 1080p clip
 
-**Cause:** Faster R-CNN backbone + custom Detectron2 architecture. No batching support (per-frame only).
+**Why:**
+- Hands23 runs per-frame (not batched) via Detectron2's `DefaultPredictor`
+- ~180ms/frame on CPU, ~100-200ms/frame on GPU (untested on this host)
+- Cannot be easily batched through the public API
 
-**Improvement path:**
-  1. **Short-term (P1 in OPTIMIZATION_PLAN_V3):** Profile Detectron2 predictor's batching capability. May already support batches internally; check if Model Zoo exports support batch inference.
-  2. **Medium-term (P2.2):** Swap Hands23 backbone from X-101-FPN (~150M params) to a lighter variant (ResNet-50 or MobileNet). Literature suggests Hands23 accuracy is dominated by the head (contact state classification), not backbone depth. Prototype on the training codebase.
-  3. **GPU tier (expected ~100-200ms/frame):** Hands23 is designed to run on modern GPUs. Benchmark on A10G; if it hits <500ms, that's a 7-10x speedup and pivots the bottleneck away from hands.
+**Plan documented:**
+OPTIMIZATION_PLAN_V3 §6 explicitly states "Does not modify Hands23." Hands23 remains out of scope per user constraint.
+
+**Impact:** At scale (5,000 videos/day), Hands23 dominates. A single optimized pass would cut end-to-end time by ~30-40%.
+
+**Feasibility for future:**
+P2.2 (Hands23 backbone swap) is listed as speculative after all P0 + P1 work. Would require retraining or finding a compatible faster backbone.
 
 ---
 
-### Metadata gate (`ffprobe`) is always run even for rejected videos (Low Priority)
+### Motion Analysis Reopens Video per Clip (FIXED in P0.2)
 
-**Problem:** `pipeline.py:219` always calls `get_video_metadata` even if the video is later rejected at Phase 0. This is unavoidable (metadata gate must happen first).
+**Status:** ✅ **RESOLVED** per OPTIMIZATION_PLAN_V3.md
 
-**Impact:** Negligible (ffprobe is fast, ~50-100ms).
+Previously, `check_motion_combined()` reopened the video file per clip, requiring N+1 decodes for N clips. Now resolved via `MotionAnalyzer` which collects LK data during frame extraction in a single pass.
 
-**Note:** This is correct behavior — Phase 0 is intentionally a gate.
+**Files affected (now optimized):**
+- `bachman_cortex/utils/frame_extractor.py` (accepts `motion_analyzer` kwarg)
+- `bachman_cortex/checks/motion_analysis.py:597` (old re-open, replaced with analyzer-based slicing)
+
+---
+
+### OpenCV CUDA LK Disabled on This Host
+
+**Files:** `bachman_cortex/checks/motion_analysis.py:62-78` (CUDA LK path)
+
+**Situation:**
+The code has a CUDA-accelerated LK path:
+```python
+_CUDA_LK = False
+try:
+    if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+        cv2.cuda.SparsePyrLKOpticalFlow.create()  # smoke-test
+        _CUDA_LK = True
+except Exception:
+    pass
+```
+
+Per OPTIMIZATION_PLAN_V3.md §2: `cv2.cuda.getCudaEnabledDeviceCount()` returns 0 because the pip `opencv-python` doesn't include CUDA support. **CUDA OpenCV was built from source and installed locally, but this code path is still dead** because the installed cv2 was not actually detected as CUDA-capable during the test.
+
+**Impact:** Motion analysis runs on CPU. Should be 5-10x slower than CUDA path.
+
+**Fix approach:** The OPTIMIZATION_PLAN_V3.md §5 P2.1 notes that CUDA OpenCV was "done" via `scripts/install_opencv_cuda.sh`, but the `_CUDA_LK = False` flag in `motion_analysis.py` remains unchecked. The path exists and will activate IF cv2 is rebuilt correctly.
+
+**Test needed:**
+```python
+import cv2
+print(cv2.cuda.getCudaEnabledDeviceCount())  # Should be > 0 if CUDA build is active
+```
 
 ---
 
 ## Fragile Areas
 
-### Motion analysis is sensitive to frame skip cadence (Medium Priority, Mitigated)
+### GDINO Parallel Thread Ordering Issue (Now Opt-In)
 
-**Component:** `MotionAnalyzer` accumulates per-second LK translation/rotation arrays. The cadence at which frames are processed affects temporal resolution.
+**Files:** `bachman_cortex/pipeline.py:407-413, 555-557` (GDINO thread + _gdino_skip_ready event)
 
-**Files:** `bachman_cortex/checks/motion_analysis.py:200-250` (MotionAnalyzer class), `bachman_cortex/pipeline.py:252-260` (initialization)
+**Situation:**
+GDINO runs in a separate thread but waits on `_gdino_skip_ready`, which is only set AFTER the Phase 1 inner loop completes. This makes GDINO effectively sequential, not parallel.
 
-**Fragility:** If the native video FPS is unknown or incorrect, the per-second granularity breaks. Example: if the video is labeled as 30 FPS but actually plays at 29.97 FPS, the LK samples will accumulate at the wrong cadence.
+**Status per OPTIMIZATION_PLAN_V3.md §3.5:**
+GDINO is now opt-in (behind `--privacy-check` flag). Its sequential bottleneck no longer affects the default hot path. However, when privacy checks are enabled, this serialization still exists.
 
-**Mitigation:** Obtained from `cv2.VideoCapture.get(CAP_PROP_FPS)` which is reliable for standard codecs. For corrupted headers, falls back to metadata from `ffprobe` (more robust). Validated in smoke tests.
+**Fix documented but not implemented:**
+P0.priv.B (un-block GDINO from skip gate) is listed as future work for privacy-enabled runs. Would require structural change to launch GDINO speculatively and handle its results after Phase 1.
 
-**Safe modification:** The `MotionAnalyzer` dataclass is deterministic given frame_skip. If test regression occurs, compare LK samples (sample counts, translation/rotation distributions) between old/new code on the same test video.
-
-**Test coverage:** `bachman_cortex/tests/benchmark_phase_correlation.py` has a motion analyzer bench. Add a regression test that compares motion scores on a fixed test clip.
-
----
-
-### Segment merging / filtering logic is complex (Medium Priority)
-
-**Component:** `segment_ops.py` merges overlapping bad segments, filters by duration, computes good segments. Contains multiple thresholds.
-
-**Files:** `bachman_cortex/utils/segment_ops.py:43-125` (merge_bad_segments, filter_short_bad_segments, compute_good_segments)
-
-**Fragility:** The logic is correct but non-obvious:
-  1. `per_frame_to_bad_segments`: Converts per-frame pass/fail to contiguous bad segments.
-  2. `merge_bad_segments`: Merges segments within `gap_threshold` (default 1.0 s).
-  3. `filter_short_bad_segments`: Drops segments shorter than `min_duration` (default 2.0 s).
-  4. `compute_good_segments`: Inverse of bad segments.
-  5. `filter_checkable_segments`: Keeps only segments >= `min_checkable_segment_sec` (default 60 s).
-
-Safe modification: Each function has isolated responsibility. Add unit tests for boundary cases (e.g., bad segment at video start/end, gap exactly at threshold, contiguous bad segments).
-
-**Test coverage:** Gaps. Add `tests/test_segment_ops.py` with synthetic per-frame results.
+**Risk:** Privacy-enabled runs pay full GDINO cost (112.5s per original profile) without parallelism gains.
 
 ---
 
-### Hands23 wearer filtering heuristic is context-dependent (Medium Priority, Mitigated)
+### Frame Cache Memory Spike at Native Resolution (FIXED in P1.2)
 
-**Component:** Participants check filters out wearer's hands/arms by checking overlap with Hands23 detections and bottom-frame anchoring.
+**Status:** ✅ **RESOLVED** per OPTIMIZATION_PLAN_V3.md
 
-**Files:** `bachman_cortex/checks/participants.py:80-120` (wearer filtering)
+Previously, Phase 1 cache held full-resolution (1080p) frames. Now (`pipeline.py:654`) it holds 720p downscaled frames after P1.1, cutting RAM from ~1.1GB to ~475MB for 180-frame clips.
 
-**Fragility:** The heuristic assumes:
-  1. Wearer's hands always overlap with Hands23 detections (true for "visible hands" check, but wearer may be out-of-frame)
-  2. Other people's detections are not bottom-frame-anchored (assumption breaks for very tall people or overhead angles)
-  3. YOLO person bbox height > 15% of frame is a meaningful filter (may fail on close-up torso-only shots)
+**Current state:** Downscaling applied at `PipelineConfig.phase1_long_edge = 720` (default).
 
-Safe modification: Use historical data (test set) to validate wearer-filtering accuracy. Flag edge cases in logs for manual review. Consider a `--strict-participants` mode that requires explicit "is this the wearer?" logic (e.g., hand bounding box centroid in bottom 30% of frame).
-
-**Test coverage:** Add test videos with edge cases (wearer's hand only in frame, tall bystander, overhead angle). Verify participants check output.
+**Fallback:** `phase1_long_edge=None` disables downscaling if face recall issues arise.
 
 ---
 
-### Grounding DINO OOM fallback is undocumented (Low Risk)
+### Model Weight Checksum Validation Not Implemented
 
-**Component:** GDINO batching has auto-fallback: halves batch size on CUDA OOM, retries down to single-frame.
+**Files:** `bachman_cortex/models/download_models.py` (downloads SCRFD, YOLO, Hands23, legacy 100DOH)
 
-**Files:** `bachman_cortex/models/grounding_dino_detector.py:140-150` (batch processing with OOM fallback)
+**Issue:**
+Downloaded model weights are never checksummed or validated. If a download is interrupted or corrupted, the pipeline will fail only at inference time, not during setup.
 
-**Fragility:** If a single-frame forward pass OOMs, the entire privacy check fails silently (graceful degradation: frames treated as privacy-clean). This is not user-visible.
+**Risk:**
+- User runs `download_models.py`, which partially downloads a 400MB Hands23 model, then disconnects.
+- Setup completes without error.
+- Later, during batch processing, inference fails obscurely when model weights are corrupted.
 
-**Mitigation:** Already documented in CONTEXT.md. Add a warning log if fallback occurs: "GDINO OOM, halving batch size" so users know GPU memory is tight.
+**Example code locations:**
+- `download_models.py:75-85` (wget/curl/urllib download, no checksum)
+- `download_models.py:86` (size printed, but no SHA256 check)
+
+**Mitigation in place:** None. Manual verification only.
+
+**Recommendation:**
+```python
+import hashlib
+# After download:
+expected_sha256 = "abc123..."  # Hardcode or fetch from source
+actual_sha256 = hashlib.sha256(open(weight_file, 'rb').read()).hexdigest()
+assert actual_sha256 == expected_sha256, f"Corrupted download: {actual_sha256}"
+```
 
 ---
 
 ## Scaling Limits
 
-### Host has high swap thrashing under heavy multi-worker load (High Priority)
+### GPU Memory Constrained to Single Worker on RTX 3060
 
-**Current state:** (from OPTIMIZATION_PLAN_V3:75)
-  - Host: 16 GB RAM, ~9.4 GB free
-  - Swap: 4 GB, 92% used (3.7 GB / 4 GB)
+**Files:** `bachman_cortex/run_batch.py:70-81` (worker count auto-detection)
 
-**Problem:** Multi-worker batch runs (`--workers 4` or higher) cause each worker to load all models (~6-8 GB) into its own process. Total memory demand = 4 workers × 8 GB = 32 GB, but only 16 GB + 4 GB swap = 20 GB available. This triggers swap thrashing.
+**Current hardware:** RTX 3060 12GB, 16GB system RAM
 
-**Files:** `bachman_cortex/run_batch.py:70-81` (_auto_detect_workers), `bachman_cortex/pipeline.py:141-167` (load_models)
+**Problem:**
+The `_auto_detect_workers()` function estimates workers as `min(vram_gb // 8, cpu_count // 2, 4)`. On a 3060 (12GB total), this gives:
+```python
+workers = min(12 // 8, ...) = min(1, ...) = 1
+```
 
-**Impact:** Processing slows drastically under load. Observed in LATAM batch runs.
+So only 1 concurrent worker can run, meaning only 1 video processes at a time.
+
+**Why:**
+Each worker loads all models into its own CUDA context (~6-8GB per the code comment). With only 12GB total and OS/PyTorch overhead, 1 worker is safe.
 
 **Scaling path:**
-  1. **Immediate:** Set `--workers 1` or `--workers 2` by default (even with `_auto_detect_workers` logic).
-  2. **Short-term:** Use shared model loading via a model server (Redis cache or a central process that all workers inherit).
-  3. **Long-term:** AWS deployment on A10G instances with 24 GB VRAM. Tune workers for that environment separately.
+- Use multi-GPU setups (e.g., 2x RTX 3060 = 2 workers, 24GB total)
+- Use larger GPUs (A10G 24GB = ~2-3 workers)
+- Use CPU-only fallback with parallel workers (much slower, see CONTEXT.md economics)
 
-**Safe modification:** Add a memory check at startup: if available memory < (workers × 8 GB + 2 GB buffer), warn the user and suggest `--workers N` override.
-
----
-
-### LATAM sample set is 2336×1080 (non-standard resolution) (Low Risk)
-
-**Problem:** LATAM test samples have atypical 2336×1080 resolution (ultra-wide aspect ratio). Frame caches and model inputs are sized assuming 1920×1080 or 1280×720 in benchmarks.
-
-**Files:** Phase 1 frame downscaling (`pipeline.py:120-122`) handles arbitrary resolutions, but memory estimates in plans assume 1080p baseline.
-
-**Impact:** Memory usage on ultra-wide videos may be higher than projected. Unlikely to break anything, but should be noted.
+**Current limitation:** ~5,000 videos/day on single 3060 = ~5,000 / (180 sec/video * 60 / 1-worker) = ~0.46 videos/second. With 86,400 seconds/day and 180s per video, need ~480 videos/day throughput, which is feasible. But at scale, multi-GPU or larger GPU needed.
 
 ---
 
-## Dependencies at Risk
+### RAM Swap Thrashing During Frame Cache Peak
 
-### insightface SCRFD model may be delisted (Low Risk)
+**Files:** `bachman_cortex/pipeline.py:650-659` (phase1_cache assembly)
 
-**Risk:** InsightFace's buffalo_sc model (SCRFD-2.5GF) is downloaded dynamically by `FaceAnalysis(name="buffalo_sc", root=cache_dir)`. If InsightFace stops hosting this model or changes the URL structure, downloads fail.
+Per OPTIMIZATION_PLAN_V3.md §2:
+- System RAM: 16GB total, ~9.4GB free
+- Swap: 4GB total, **92% used (3.7GB)**
+- Peak usage during Phase 1: ~1.1GB native frames (now 475MB at 720p) + ~2-3GB model weights + PyTorch workspace
 
-**Files:** `bachman_cortex/models/scrfd_detector.py:18-32`, `bachman_cortex/models/download_models.py:18-32`
+**Impact:**
+Swap thrashing causes irregular latency spikes (p99 wall-clock varies by 10-20s on same video). This affects batch throughput predictability.
 
-**Mitigation:** InsightFace is a mature project (maintained by Insightface contributors). Model URLs are stable. As backup, the project could mirror the model weights locally or to S3.
+**Mitigation:**
+- P1.1 (720p downscale) + P1.2 (drop raw cache) already deployed, halving frame cache size.
+- Further wins require model quantization (INT8 ONNX) or model splitting (not realistic for a single worker).
 
-**Better fix:** Add a `--local-models` flag that uses pre-downloaded weights from a models/ directory instead of downloading dynamically.
-
----
-
-### Ultralytics YOLO models are auto-downloaded at first run (Low Risk)
-
-**Risk:** YOLO11s and YOLO11m-pose are downloaded on first model inference by ultralytics (from `download.ultralytics.com`). If Ultralytics changes their CDN or domain, downloads fail.
-
-**Files:** `bachman_cortex/models/yolo_detector.py:13-25`, `bachman_cortex/models/yolo_pose_detector.py:13-30`
-
-**Mitigation:** Ultralytics is the official maintainer of YOLO models; URLs are stable. The project could pre-download weights and vendor them.
-
----
-
-### Detectron2 build-from-source dependency (Medium Risk)
-
-**Risk:** Hands23 requires Detectron2, which is installed via `pip install git+https://github.com/facebookresearch/detectron2.git --no-build-isolation`. This clones from GitHub and builds C++ extensions locally.
-
-**Files:** `bachman_cortex/models/download_models.py:96-100`
-
-**Impact:** If GitHub is inaccessible or the repo is deleted, Hands23 setup fails. Build times are long (~2-3 minutes). C++ compilation failures are hard to debug.
-
-**Mitigation:** This is documented as a one-time setup cost. For production, pre-build a Docker image with Detectron2 already compiled.
-
-**Better fix:** Use a precompiled Detectron2 wheel from a Python package index (if available) rather than building from source.
-
----
-
-## Missing Critical Features
-
-### No hash verification of downloaded model weights (Low Risk)
-
-**Problem:** Model weights are downloaded without verifying file integrity. A corrupted download or MITM attack could load malicious model files.
-
-**Files:** All `download_*` functions in `bachman_cortex/models/download_models.py`
-
-**Blocks:** Nothing critical — models are verified by loaded models being used (if weights are corrupted, model inference fails with a clear error). But security best practice would add hash checks.
-
-**Improvement:** Publish SHA256 hashes in a `models/CHECKSUMS.txt` file. After download, verify `sha256sum weights.pt` matches the expected hash.
-
----
-
-### No explicit test coverage for segment ops (Medium Priority)
-
-**Problem:** The segment merging, filtering, and good-segment computation logic in `segment_ops.py` is complex and has no unit tests.
-
-**Files:** `bachman_cortex/utils/segment_ops.py`
-
-**Blocks:** Nothing critical — logic is covered implicitly by end-to-end tests (via `run_batch.py` on test videos). But regressions in edge cases (video start/end boundary segments, exact-threshold gap merges) could go unnoticed.
-
-**Test coverage needed:** Add `bachman_cortex/tests/test_segment_ops.py` with synthetic per-frame results and expected segment outputs.
-
----
-
-### No smoke test for Hands23 wearer filtering (Low Priority)
-
-**Problem:** The wearer filtering heuristic in `participants.py` is never validated against known ground truth (videos where wearer is/is not visible, etc.).
-
-**Files:** `bachman_cortex/checks/participants.py:80-120`
-
-**Blocks:** Nothing — heuristic is empirically sound (tested on real LATAM data). But a formal validation set would catch edge cases.
-
-**Test coverage needed:** Curate 10 LATAM clips covering edge cases (wearer visible, wearer mostly out-of-frame, wearer hands-only, wearer with tall bystander). Validate participants check output.
+**Recommendation:** For production at scale, use machines with ≥24GB RAM to avoid swap.
 
 ---
 
 ## Test Coverage Gaps
 
-### Hands23 accuracy on LATAM data is unmeasured (High Priority)
+### No Privacy Validation Set (Blocks GDINO Optimization)
 
-**What's not tested:** Hands23's per-frame detection accuracy (precision/recall) on the specific LATAM video set (agricultural/commercial/residential tasks). The model was trained on egocentric kitchen / YouTube videos; generalization to other domains is unknown.
+**Files:**
+- No `bachman_cortex/tests/privacy_validation/` directory exists
+- `OPTIMIZATION_PLAN_V2.md §4 P0.0` describes how to bootstrap one
 
-**Files:** `bachman_cortex/models/hand_detector.py` (model wrapper)
+**Issue:**
+Every privacy detection optimization (GDINO-tiny swap, confidence thresholding, tracker propagation) trades accuracy for speed. Without a labelled validation set, there's no way to confirm privacy recall doesn't regress.
 
-**Risk:** The hand visibility check thresholds (80% both hands, 90% at-least-one) assume Hands23 detections are correct. If Hands23 misses hands in 30% of frames on LATAM videos, the check will systematically reject usable content.
+**Blocking:**
+- P0.5 (swap to GDINO-tiny) cannot ship without validation set
+- P2.x privacy-path optimizations cannot be measured
 
-**Priority:** Run Hands23 on LATAM test set with manual ground-truth annotations (50-100 frames, 20 videos minimum). Measure precision/recall at confidence thresholds 0.7, 0.8, 0.9. If recall < 85% at the configured threshold, either (a) lower the threshold, (b) retrain Hands23 on LATAM examples, or (c) switch to a different hand detector.
+**Current state:**
+Privacy checks are opt-in (behind `--privacy-check` flag), so default runs don't use GDINO. But the flag exists as a precondition for future work.
 
----
-
-### Face-presence check threshold (0.8 confidence) is not validated (Medium Priority)
-
-**What's not tested:** The face detection confidence threshold of 0.8 (in `pipeline.py:72`) was set to the design spec but is not validated against real LATAM data.
-
-**Files:** `bachman_cortex/checks/face_presence.py`, `bachman_cortex/pipeline.py:72`
-
-**Risk:** SCRFD may have systematic precision/recall characteristics at this threshold. Threshold is too high (misses real faces) or too low (flags false positives) on LATAM videos.
-
-**Test coverage needed:** Run SCRFD on LATAM test set (1000+ frames, varied angles/lighting) with manual ground-truth face annotations. Plot precision-recall curve. Adjust threshold to maximize F1 or to a user-defined operating point (e.g., 90% recall at 95% precision).
+**Recommendation:**
+OPTIMIZATION_PLAN_V3.md notes this as "not started" but "prerequisite for P0.5, P2.1, P2.2". Timeline: ~3-4 hours to bootstrap (~200-400 GDINO-harvested frames + manual review).
 
 ---
 
-### Privacy sensitivity is untested (High Priority)
+### No Regression Tests for GPU-Accelerated LK vs CPU
 
-**What's not tested:** Grounding DINO's accuracy at detecting credit cards, ID cards, documents, and screens in LATAM videos.
+**Files:** `bachman_cortex/checks/motion_analysis.py` (both CPU and CUDA paths exist)
 
-**Files:** `bachman_cortex/models/grounding_dino_detector.py`, `bachman_cortex/checks/privacy_safety.py` (deleted in recent refactor)
+**Issue:**
+The code has two LK implementations (CPU fallback, CUDA GPU path), but no test compares their outputs. If CUDA LK is activated, motion scores could diverge from CPU baseline without detection.
 
-**Risk:** GDINO may have false negatives (misses sensitive objects) or false positives (flags innocuous objects as sensitive). Zero-tolerance privacy check (`check_privacy_safety` requires 0 detections) means any false positive rejects the entire segment. False negatives pass through contaminated data.
+**OPTIMIZATION_PLAN_V3.md notes:**
+"motion scores within 0.001 of CPU baseline" was observed during a manual bench run, but no automated test verifies this.
 
-**Test coverage needed:** Curate a 200-frame labeled privacy test set (images of credit cards, ID cards, documents, screens from LATAM-style egocentric footage). Measure GDINO precision/recall. If precision < 95%, this check cannot enforce zero-tolerance safely. Either (a) raise `box_threshold` + `text_threshold` to reduce false positives, (b) use YOLO fine-tuned on privacy classes (see YOLOV5N_FINETUNE_PLAN.md), or (c) disable the check.
+**Risk:** If CUDA OpenCV build changes or numerical precision differs, motion checks could silently change thresholds.
+
+**Recommendation:**
+```python
+# unittest in benchmarks
+def test_cuda_lk_matches_cpu():
+    test_video = "path/to/test.mp4"
+    # Run both paths on same video
+    cpu_scores = motion_analysis_cpu(test_video)
+    gpu_scores = motion_analysis_cuda(test_video)
+    np.testing.assert_allclose(cpu_scores, gpu_scores, atol=0.001)
+```
 
 ---
 
-### Luminance / blur thresholds are design-spec only (Medium Priority)
+## Complexity Hotspots
 
-**What's not tested:** The luminance/blur decision table (in `luminance_blur.py`) thresholds for brightness stability, Tenengrad variance, etc. were set per design spec but not validated against real video datasets.
+### Motion Analysis Module is 1,059 Lines (Largest Single File)
 
-**Files:** `bachman_cortex/checks/luminance_blur.py:50-80` (decision table)
+**File:** `bachman_cortex/checks/motion_analysis.py`
 
-**Risk:** Thresholds may be too strict (rejects usable low-light content) or too lenient (passes blurry footage).
+**Functions/classes:**
+- `MotionAnalyzer` — stateful LK accumulator (large)
+- `check_motion_combined_from_analyzer()` — slice analyzer results per clip
+- `check_motion_combined()` — legacy per-clip motion (now unused in Phase 2)
+- `_lk_track()` — CPU/CUDA branch for optical flow
+- Multiple helper functions for LK, SSIM, frozen detection
 
-**Test coverage needed:** Collect 100+ LATAM clips with varying lighting (indoor, outdoor, night, overexposed). Manually label which clips are "acceptably bright and sharp" vs. "too dark/blurry". Measure false positive/negative rates at current thresholds. Adjust.
+**Complexity:**
+- CPU and CUDA code paths interleaved
+- State machine for LK accumulation (per-second Trans/Rot tracking, sampled frame list for frozen detection)
+- Multiple thresholds (stability_trans, stability_rot, frozen_trans, frozen_rot, etc.)
+
+**Maintainability:**
+- 1,059 lines is manageable but at the threshold where extraction into separate modules would help
+- CUDA path is #ifdef-like code (try/except around cv2.cuda) which makes logic flow harder to follow
+
+**No immediate action needed** — the code is well-documented in OPTIMIZATION_PLAN_V3.md and works. But if motion checks grow more complex (e.g., adding IMU-based fallback), consider extracting CPU and CUDA paths into separate modules.
 
 ---
 
-*End of concerns audit*
+### Pipeline.py has Multiple Phases with Nested Loops (757 Lines)
+
+**File:** `bachman_cortex/pipeline.py`
+
+**Structure:**
+- 4 phases (metadata gate, segment filtering, validation, yield)
+- Phase 2 has nested loops: clips → per-clip checks → per-frame aggregation
+- Many conditional branches based on flags (privacy, egocentric, body-part visibility)
+
+**Complexity sources:**
+- `_phase1_run_inference()` — loop over batches of frames, runs YOLO (batch), SCRFD (threaded), Hands23 (per-frame)
+- `_phase2_validate_single_clip()` — series of checks, some conditional on flags
+- Flag-based loading (`pose_needed`, `privacy_needed`, etc.)
+
+**Maintainability:**
+- ~757 lines is large but reasonable for a 4-phase pipeline
+- Clear comments mark phase boundaries
+- Flag-based conditionals are localized (lines 89-91, 107, 410-411, etc.)
+
+**Future risk:** If more optional checks are added, the conditional logic could become hard to follow. Consider a plugin architecture or strategy pattern.
+
+---
+
+## Dependencies at Risk
+
+### Hands23 GitHub Dependency (Maintenance Risk)
+
+**Files:** `bachman_cortex/models/hand_detector.py`, `download_models.py:53-64` (clones from `github.com/EvaCheng-cty/hands23_detector`)
+
+**Risk factors:**
+- **Author maintenance:** Single-author repo (EvaCheng-cty). If author stops maintaining, security patches or PyTorch compatibility fixes may not arrive.
+- **No official PyPI package:** Must clone from GitHub at setup time. Network outages or GitHub API changes could break setup.
+- **Detectron2 dependency:** Hands23 requires `detectron2` built from source with `--no-build-isolation`, which is fragile across Python/CUDA versions.
+
+**Mitigation:**
+- Hands23 is a published NeurIPS 2023 paper with multiple citations — unlikely to disappear immediately.
+- Code is read-only (inference only); minimal risk of upstream breakage on version mismatch.
+- Recommended: Pin to a specific commit hash instead of cloning `main`.
+
+**Current approach (from download_models.py:59):**
+```python
+subprocess.run([
+    "git", "clone",
+    "https://github.com/EvaCheng-cty/hands23_detector.git",
+    str(repo_dir)
+], check=True)
+```
+
+**Recommendation:**
+```python
+# Add commit pinning:
+"https://github.com/EvaCheng-cty/hands23_detector.git@a1b2c3d"  # Known working commit
+```
+
+---
+
+### GDINO Model Still Bundled (Memory Overhead When Privacy Off)
+
+**Files:** `bachman_cortex/models/download_models.py`, `download_models.py:128-143` (GDINO weights download)
+
+**Issue:**
+GDINO weights (~700MB) are downloaded during setup even though privacy checks are opt-in and disabled by default. This wastes storage and initial download time.
+
+**Per OPTIMIZATION_PLAN_V3.md:**
+GDINO is now gated in `pipeline.py:89` (conditional flag), so `load_models()` skips it when privacy is off. But the weights are still downloaded.
+
+**Optimization:** Lazy-load GDINO weights only when `--privacy-check` is first requested. Currently, setup downloads all models.
+
+**Impact:** ~700MB disk space and ~2-3 min download time saved per setup if privacy is never used (common for default runs).
+
+---
+
+## Missing Critical Features
+
+### IMU-Based Motion Detection Not Implemented (Blocked on Precondition)
+
+**Files:** OPTIMIZATION_PLAN_V3.md §4 P1.3, OPTIMIZATION_PLAN_V2.md §7 (IMU details)
+
+**Status:** Not started. Blocked on precondition: LATAM samples do not have `gpmd` (GoPro Metadata Format) tracks.
+
+**Why it matters:**
+- GoPro and other action cameras embed gyroscope/accelerometer data in metadata
+- Motion analysis could be: gyro RMS per second instead of optical flow
+- Expected speedup: 40s → 1s on videos with GPMF (if future videos have it)
+
+**Current workaround:** Optical flow (LK) on CPU or CUDA.
+
+**Action:** If future production ingestion includes GoPro videos with GPMF:
+1. Verify presence: `ffprobe -v error -select_streams d -show_entries stream=codec_tag_string <video>`
+2. Implement `pygpmf` integration in `motion_analysis.py`
+3. Fall back to LK for non-GPMF videos
+
+---
+
+### No Automated Model Versioning (Weights Mismatch Risk)
+
+**Files:** `bachman_cortex/models/download_models.py`, `pipeline.py:146-180` (model loading)
+
+**Issue:**
+Model weights are downloaded to hardcoded paths (`weights/insightface`, `weights/hands23_detector`, etc.) with no version tracking. If a new version is released, there's no way to distinguish old vs. new weights without manual inspection.
+
+**Risk scenario:**
+1. User A downloads SCRFD v2.5GF
+2. 6 months later, upstream releases SCRFD v3.0 with different accuracy
+3. User B runs `download_models.py`, gets v3.0
+4. Batch results are incomparable (different model versions mixed)
+
+**Current mitigation:** None. Implicit assumption that all workers use the same setup snapshot.
+
+**Recommendation:**
+Track model versions in a metadata file:
+```python
+# models/weights/manifest.json
+{
+  "scrfd": {"url": "...", "sha256": "...", "date": "2026-04-15"},
+  "yolo11s": {"url": "...", "sha256": "...", "date": "2026-04-15"},
+  ...
+}
+```
+
+---
+
+## Security & Infrastructure Gaps
+
+### No Runtime Limits on Model Inference (GPU OOM Risk)
+
+**Files:** `bachman_cortex/pipeline.py` (model inference loops)
+
+**Issue:**
+Models run without timeout or memory limits. If a malformed video causes a model to hang or exhaust VRAM:
+- Worker thread deadlocks
+- GPU memory leaked
+- Batch processing stalls
+
+**Example scenario:**
+1. Very high-resolution video (e.g., 4K) reaches Phase 1
+2. YOLO or Hands23 batches exceed VRAM
+3. CUDA OOM error kills the worker
+4. No retry, no cleanup
+
+**Current safeguards:**
+- Phase 0 metadata gate rejects videos outside 1080p (checks `width <= 1920, height <= 1080`)
+- Hands23 is per-frame, so memory bounded
+- YOLO batches are fixed size (_BATCH_SIZE = 16)
+
+**Remaining risk:** Edge cases (corrupted metadata, unexpected container formats) could still cause issues.
+
+**Recommendation:**
+```python
+# In _phase1_run_inference:
+import signal
+def timeout_handler(signum, frame):
+    raise TimeoutError("Inference timeout")
+signal.signal(signal.SIGALRM, timeout_handler)
+signal.alarm(300)  # 5-minute timeout per clip
+try:
+    # inference loops
+finally:
+    signal.alarm(0)  # Cancel alarm
+```
+
+(Note: `signal` is Unix-only; use `timeout` process wrapper for cross-platform safety.)
+
+---
+
+### Multiprocessing Pool Worker State Not Isolated (Crash Propagation)
+
+**Files:** `bachman_cortex/run_batch.py:90-100` (pool initialization)
+
+**Issue:**
+Workers are initialized via `_init_worker()`, which loads all models into the worker's CUDA context. If a worker crashes (e.g., CUDA OOM), the models are left in an inconsistent state. The pool may reuse the crashed worker for subsequent videos, leading to cascading failures.
+
+**Current mitigation:** `multiprocessing.Pool` has a `maxtasksperchild` parameter (not used in current code). Setting this to a small number (e.g., 10) would recycle workers periodically.
+
+**Recommendation:**
+```python
+with Pool(
+    processes=num_workers,
+    initializer=_init_worker,
+    initargs=(config_dict,),
+    maxtasksperchild=10  # Recycle worker after 10 videos
+) as pool:
+    ...
+```
+
+This limits crash propagation — a worker that fails will be replaced within 10 videos.
+
+---
+
+## Known Unresolved Issues from Optimization Plans
+
+### YOLO Batching Not Extended to SCRFD/Hands23 (P0.3 Partial)
+
+**Status:** ✅ **DONE** but may have room for improvement
+
+Per OPTIMIZATION_PLAN_V3.md §3.4:
+- YOLO uses batched inference ✅
+- SCRFD batched via `ThreadPoolExecutor(scrfd_threads=4)` ✅
+- Hands23 remains per-frame (no batching possible via public API)
+
+**Current state:** P0.4 uses threaded SCRFD, which is ~1.2x faster than serial but not true batching. Expected impact: 5-10% Phase 1 speedup.
+
+**Future improvement:** If Hands23 is ever optimized (P2.2), would require either:
+- Direct Detectron2 batching (requires source code knowledge)
+- Model export to ONNX + batched inference
+- Alternative hand detector (breaks compatibility)
+
+---
+
+### Privacy GDINO Parallelization Not Implemented (P0.priv.B)
+
+**Status:** Not started, opt-in path only
+
+Per OPTIMIZATION_PLAN_V3.md, when `--privacy-check` is enabled:
+- GDINO still waits on `_gdino_skip_ready` (set after Phase 1 finishes)
+- This makes GDINO sequential, despite having its own thread
+- Could be un-blocked to run speculatively, accept the overhead of processing skip-marked frames
+
+**Impact:** When privacy is enabled (not default), GDINO adds 50-100s to wall-clock. Un-blocking could save 60-80s by overlapping with Hands23-dominated Phase 1.
+
+**Why not done:** User constraint: focus on default-run performance first.
+
+---
+
+## Summary of Risk Priorities
+
+| Issue | Severity | Effort | Notes |
+|-------|----------|--------|-------|
+| Custom OpenCV dnn shim fragility | **Medium** | Low | Works now, breaks if OpenCV rebuilt. Clear mitigation path. |
+| Hands23 GitHub dependency | Medium | Low | Pin to commit hash recommended. |
+| Model weight validation (checksums) | **Medium** | Low | Setup could fail silently if download corrupts. |
+| GPU OOM/timeout handling | **Medium** | Medium | Workers can deadlock. Add signal-based timeouts. |
+| Worker crash propagation | Low | Low | Add `maxtasksperchild` to recycle workers. |
+| Privacy validation set missing | Low | High | Blocks future optimizations, not default path. |
+| CUDA LK on CPU fallback | Low | Low | Works, not critical since P0.2/P1.1 compensate. |
+| GDINO parallelization (privacy path) | Low | Medium | Opt-in path, documented as future work. |
+
+---
+
+*Concerns audit: 2026-04-15*

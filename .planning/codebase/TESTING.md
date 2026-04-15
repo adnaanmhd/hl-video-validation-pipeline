@@ -5,210 +5,111 @@
 ## Test Framework
 
 **Runner:**
-- **No pytest/unittest framework detected** — tests are standalone scripts
-- Test files located in `bachman_cortex/tests/`
-- Tests are **executable Python modules**, not pytest suites
+- No dedicated test framework configured (pytest, unittest not in dependencies)
+- Benchmarking via standalone scripts instead of test framework
+- Manual test videos generated for verification
 
-**Assertion Library:**
-- No standard assertion library used (no pytest, unittest, or nose)
-- Tests use **print output for validation** and manual inspection
-- Benchmarks validate latency percentiles and detection counts via printed output
+**Test Files:**
+- Location: `bachman_cortex/tests/`
+- Files: `benchmark_models.py`, `benchmark_phase_correlation.py`, `generate_test_video.py`
+- Executed directly as Python modules: `python -m bachman_cortex.tests.benchmark_models`
 
 **Run Commands:**
 ```bash
-# Run benchmark suite for all 4 ML models
+# Benchmark all ML models
 python -m bachman_cortex.tests.benchmark_models
 
-# Run phase-correlation motion analysis benchmark
+# Benchmark phase-correlation motion analysis
 python -m bachman_cortex.tests.benchmark_phase_correlation
 
-# Generate test video for benchmarking
+# Generate test video
 python -m bachman_cortex.tests.generate_test_video
 ```
 
-## Test File Organization
+## Benchmark Structure
 
-**Location:**
-- All test/benchmark files co-located in `bachman_cortex/tests/` directory
-- Not separated from source code; integrated into package
+**Entry Point Pattern:**
+- Each benchmark is a standalone module with a `__main__` guard
+- Example from `benchmark_models.py`:
+  ```python
+  if len(sys.argv) < 2:
+      print("Usage: python -m ...")
+      sys.exit(1)
+  ```
 
-**Naming:**
-- Benchmark scripts: `benchmark_*.py` (e.g., `benchmark_models.py`, `benchmark_phase_correlation.py`)
-- Utility/generation scripts: `generate_*.py` (e.g., `generate_test_video.py`)
-- Init file: `__init__.py` (empty, allows directory to be a package)
+**Test Data Setup:**
+- `generate_test_video.py` creates synthetic test videos
+- Benchmarks load real videos from command-line arguments
+- Frame extraction via `extract_frames()` utility with configurable FPS
 
-**File Structure:**
-```
-bachman_cortex/tests/
-├── __init__.py                           # Empty
-├── benchmark_models.py                   # Benchmark all 4 ML detectors
-├── benchmark_phase_correlation.py        # Compare motion analysis approaches
-└── generate_test_video.py                # Create synthetic test video
-```
+## Benchmark Functions
 
-## Test Structure
+**Model Benchmarking Pattern:**
+- Separate function per detector: `benchmark_scrfd()`, `benchmark_yolo()`, `benchmark_100doh()`
+- Shared structure:
+  1. Warmup phase (2-3 frames)
+  2. Measurement phase on full frame set
+  3. Detection counting
+  4. Result aggregation
 
-**Suite Organization:**
-Tests are **standalone executable scripts** with:
-1. Module docstring explaining purpose
-2. Helper/sub-function definitions
-3. Main benchmarking function(s)
-4. `if __name__ == "__main__"` entry point
-
-**Example from `bachman_cortex/tests/benchmark_models.py`:**
+**Example from `benchmark_models.py`:**
 ```python
-"""Benchmark all 4 ML models on sample frames.
-
-Measures per-frame latency (p50/p95/p99) and total throughput for each model.
-"""
-
 def benchmark_scrfd(frames: list[np.ndarray]) -> dict:
     """Benchmark SCRFD face detector."""
     print("\n" + "=" * 60)
     print("SCRFD-2.5GF Face Detector")
     print("=" * 60)
-    
-    detector = SCRFDDetector(...)
-    
+
+    from bachman_cortex.models.scrfd_detector import SCRFDDetector
+
+    detector = SCRFDDetector(
+        root=os.path.join(ROOT, "bachman_cortex/models/weights/insightface"),
+    )
+
     # Warmup
     print("Warmup (3 frames)...")
     for f in frames[:3]:
         detector.detect(f)
-    
+
     # Benchmark
     print(f"Benchmarking on {len(frames)} frames...")
     result = detector.benchmark(frames)
-    
-    print(f"  p50: {result['p50_ms']:.1f}ms | p95: {result['p95_ms']:.1f}ms")
+
+    # Count detections
+    total_faces = 0
+    for f in frames:
+        faces = detector.detect(f)
+        total_faces += len(faces)
+
+    result["total_detections"] = total_faces
+    print(f"  p50: {result['p50_ms']:.1f}ms | p95: {result['p95_ms']:.1f}ms | mean: {result['mean_ms']:.1f}ms")
+    print(f"  Total faces detected: {total_faces}")
     return result
-
-def main():
-    # Extract test video
-    frames, meta = extract_frames(video_path, fps=1.0, max_frames=30)
-    
-    # Run benchmarks on extracted frames
-    results = {}
-    results["scrfd"] = benchmark_scrfd(frames)
-    results["yolo11m"] = benchmark_yolo(frames)
-    
-    # Print summary
-    print("\n" + "=" * 60)
-    print("BENCHMARK SUMMARY")
-    print("=" * 60)
-
-if __name__ == "__main__":
-    main()
 ```
 
-**Patterns:**
-- **Setup**: Load models once per function
-- **Warmup**: Run 2-3 frames to warm GPU/CPU cache before measuring
-- **Benchmark loop**: Time detector.detect() calls, collect latencies
-- **Summary**: Print p50/p95/p99 percentiles and total detections
-- **Output format**: Human-readable table with `print()` statements
+**Metrics Collected:**
+- Per-frame latency percentiles: p50, p95, p99 (in milliseconds)
+- Mean latency and total time
+- Detection counts (total faces, persons, hands, etc.)
+- Returned as dictionary for aggregation
 
-## Mocking
+## Model Benchmark Methods
 
-**Framework:** None used in tests
-
-**Patterns:**
-- Tests use **real models and real video frames** (not mocks)
-- Synthetic test data: `generate_test_video.py` creates 30-second test MP4 with simulated hands/objects
-- Test frames extracted from real or synthetic video: `extract_frames(video_path, fps=1.0, max_frames=30)`
-
-**What to Test:**
-- End-to-end model inference on representative frames
-- Latency measurements across frame count variations
-- Detection count statistics (e.g., "total_faces": 42)
-- Edge cases in motion analysis (frozen segments, jittery motion)
-
-**What NOT to Mock:**
-- ML model inference (real models tested)
-- Frame extraction (real video decode tested)
-- Optical flow computation (real camera stability measured)
-
-## Fixtures and Factories
-
-**Test Data:**
-- **Synthetic video generation**: `generate_test_video.py` creates test MP4 on first run
-- **Extracted frames**: Benchmarks extract frames at configurable fps/max_frames:
-  ```python
-  frames, meta = extract_frames(video_path, fps=1.0, max_frames=30)
-  print(f"Extracted {meta['frames_extracted']} frames in {meta['extraction_time_s']}s")
-  ```
-- **Hardcoded paths**: Tests expect video at `bachman_cortex/sample_data/test_30s.mp4`
-
-**Location:**
-- Test data generated in `bachman_cortex/sample_data/` (not committed; created on demand)
-- Video generation handled by `generate_test_video()` function
-- Model weights downloaded on first run via `download_models.py`
-
-**Example from `benchmark_models.py`:**
+**Detector.benchmark() method signature:**
+Each detector implements a `benchmark()` method:
 ```python
-def main():
-    video_path = os.path.join(ROOT, "bachman_cortex/sample_data/test_30s.mp4")
-    print(f"Extracting frames from {video_path}...")
-    frames, meta = extract_frames(video_path, fps=1.0, max_frames=30)
-    print(f"Extracted {meta['frames_extracted']} frames in {meta['extraction_time_s']}s")
+def benchmark(self, frames: list[np.ndarray]) -> dict:
+    """Benchmark inference speed on a list of frames.
+    
+    Returns dict with:
+    - model: str (model name)
+    - frames: int (frame count)
+    - p50_ms, p95_ms, p99_ms, mean_ms: float (latency percentiles)
+    - total_s: float (total time in seconds)
+    """
 ```
 
-## Coverage
-
-**Requirements:** No coverage tool enforced
-
-**Measurement:**
-- No coverage reports generated
-- Tests are **integration-level benchmarks**, not unit tests with coverage targets
-- Manual verification of results via printed output
-
-**View Coverage:**
-- Not applicable — tests are benchmark scripts without coverage instrumentation
-
-## Test Types
-
-**Unit Tests:**
-- **Not used** — No isolated unit test suite
-- Functions tested implicitly through pipeline execution in `run_batch.py`
-
-**Integration Tests:**
-- **Benchmarks serve as integration tests**:
-  - `benchmark_models.py`: Tests frame extraction + all 4 ML detectors
-  - `benchmark_phase_correlation.py`: Tests motion analysis algorithms end-to-end
-- Test all ML components on synthetic frames representing edge cases
-
-**E2E Tests:**
-- **End-to-end validation via `validate.sh` + `run_batch.py`**:
-  - Full pipeline execution on sample video
-  - Phase 0–3 executed sequentially
-  - Results written to JSON and HTML reports
-- Execute via: `./validate.sh /path/to/test/video.mp4`
-
-**Benchmark Tests (Integration-Level):**
-- Measure latency percentiles (p50, p95, p99) for each model
-- Count detections across test frames
-- Compare algorithm approaches (LK optical flow vs phase correlation)
-- Report in human-readable printed tables
-
-## Common Patterns
-
-**Async Testing:**
-- No async/await used in tests
-- GPU acceleration (CUDA) tested implicitly in detector classes
-- Benchmarks single-threaded; pipeline parallelism tested in `run_batch.py` with `multiprocessing.Pool`
-
-**Error Testing:**
-- Explicit exception handling tested in detector initialization:
-  ```python
-  if _CUDA_LK:
-      try:
-          solver = _get_cuda_lk(win_size, max_level)
-      except Exception:
-          # Fall through to CPU
-          pass
-  ```
-- Video validation errors tested in `run_batch.py` with try/except around `process_video()`
-
-**Timing/Latency Testing:**
+**Example from `scrfd_detector.py`:**
 ```python
 def benchmark(self, frames: list[np.ndarray]) -> dict:
     """Benchmark inference speed on a list of frames."""
@@ -229,76 +130,126 @@ def benchmark(self, frames: list[np.ndarray]) -> dict:
     }
 ```
 
-## Validation Script
+## Phase-Correlation Benchmark
 
-**Location:** `validate.sh` at project root
+**Purpose:**
+- Validates new motion detection algorithm against existing Lucas-Kanade + SSIM baseline
+- File: `bachman_cortex/tests/benchmark_phase_correlation.py`
 
-**Pattern:**
-- Bash script orchestrating setup and pipeline execution
-- Multi-step validation:
-  1. Check system dependencies (Python, FFmpeg, git)
-  2. Create/verify virtual environment
-  3. Install PyTorch (GPU-aware)
-  4. Install ONNX Runtime, detectron2, hl-video-validation package
-  5. Download model weights
-  6. Run pipeline: `hl-validate <video_paths>`
-
-**Usage:**
-```bash
-./validate.sh /path/to/video.mp4          # Single video
-./validate.sh /path/to/videos/            # Directory of videos
-./validate.sh --setup-only                # Setup without running pipeline
-FORCE_CPU=1 ./validate.sh /path/to/vid    # CPU-only mode
+**Structure:**
+```python
+def check_camera_stability_phase_corr(
+    video_path: str,
+    *,
+    shaky_score_threshold: float = 0.30,
+    target_fps: float = 30.0,
+    scale: float = 0.25,
+    # ... additional parameters
+) -> CheckResult:
+    """Phase-correlation stability check implementation."""
 ```
 
-**Key Features:**
-- Idempotent: safe to run multiple times (skips already-installed steps)
-- GPU-aware: detects NVIDIA GPU and installs appropriate PyTorch version
-- Fallback to CPU if no GPU or `FORCE_CPU=1` set
-- Per-worker model initialization in `run_batch.py` via `_init_worker()`
+**Comparison Logic:**
+- Implements same signature as production `check_camera_stability()` from motion_analysis.py
+- Allows side-by-side timing and results comparison
+- Scoring function `_phase_corr_score()` mirrors production logic but without rotation component
 
-## Running Tests
+## Testing Without Framework
 
-**Benchmark Models:**
-```bash
-python -m bachman_cortex.tests.benchmark_models
+**Validation approach:**
+- Real video data testing via benchmarks
+- Precision metrics (percentiles, mean latency)
+- Visual/numerical output inspection
+- Reproducibility via fixed frame sets
+
+**Test data:**
+- Generated synthetic videos (from `generate_test_video.py`)
+- Real egocentric video samples (in `vid_samples/` directory if present)
+- Frame extraction utilities support various FPS rates
+
+## Implicit Testing
+
+**Error Paths:**
+- GPU fallback tested in frame_extractor: CUDA path crashes gracefully to CPU
+- Example from `frame_extractor.py`:
+  ```python
+  if _NVDEC_OK:
+      try:
+          reader = cv2.cudacodec.createVideoReader(video_path)
+          backend = "nvdec"
+      except cv2.error:
+          reader = None
+  ```
+
+**Edge Cases:**
+- Empty frame list handling in all check functions
+- Example from `check_hand_visibility.py`:
+  ```python
+  if total_frames == 0:
+      return CheckResult(status="fail", metric_value=0.0, confidence=0.0,
+                         details={"error": "no frames"})
+  ```
+
+**Type Checking:**
+- Comprehensive type hints enable static type checking (no explicit mypy runs observed)
+- Dataclass validation through type system
+
+## Benchmark Output
+
+**Console output format:**
+- Descriptive headers with section separators (60-char lines)
+- Warmup status messages
+- Per-model result summaries with formatted metrics
+
+**Example output pattern:**
 ```
-Output:
-```
+============================================================
 SCRFD-2.5GF Face Detector
-==============================================
+============================================================
 Warmup (3 frames)...
-Benchmarking on 30 frames...
-  p50: 45.3ms | p95: 52.1ms | mean: 46.2ms
-  Total faces detected: 42
+Benchmarking on 100 frames...
+  p50: 45.2ms | p95: 52.1ms | mean: 46.3ms
+  Total faces detected: 150
 ```
 
-**Phase-Correlation Benchmark:**
+**Return values:**
+- Benchmarks return dict suitable for JSON serialization
+- Pipeline results use dataclass-to-dict conversion: `dataclasses.asdict(result)`
+
+## Testing Integration
+
+**Pipeline validation:**
+- `run_batch.py` loads models once per worker process (initialization pattern)
+- Early-stopping gates tested implicitly via pipeline execution
+- Per-video error handling: `try/except/traceback` around pipeline processing
+
+**Batch processing:**
+- Multiprocessing pattern: `ProcessPoolExecutor` with model preloading
+- `_init_worker()` function ensures models load once per worker
+- Errors captured and stored in result dict: `error: str | None` field in `VideoProcessingResult`
+
+## Setup Validation
+
+**`validate.sh` testing:**
+- Script includes idempotent checks for dependencies
+- Python version verification: `check_python_version()` function
+- GPU detection and conditional PyTorch installation
+- Model weight download verification before pipeline run
+
+**Dependency validation:**
 ```bash
-python -m bachman_cortex.tests.benchmark_phase_correlation
-```
-Compares LK optical flow + SSIM motion analysis vs phase-correlation approach.
+# Check Python version
+python3.12 --version
 
-**Generate Test Video:**
-```bash
-python -m bachman_cortex.tests.generate_test_video
-```
-Creates synthetic 30s 1080p 30fps test video at `bachman_cortex/sample_data/test_30s.mp4`.
+# Check system tools
+ffprobe --version  # FFmpeg metadata extraction
+git --version      # For detectron2 installation
 
-## Test Data Location
-
+# Check Python packages
+python -c "import torch"
+python -c "import onnxruntime"
+python -c "import detectron2"
 ```
-bachman_cortex/
-├── sample_data/
-│   └── test_30s.mp4              # Synthetic test video (generated on demand)
-├── models/
-│   └── weights/
-│       ├── insightface/          # SCRFD model weights (downloaded on setup)
-│       ├── hands23_detector/     # Hands23 model (downloaded on setup)
-│       └── ...
-```
-
-Model weights are downloaded via `bachman_cortex/models/download_models.py` during setup (called from `validate.sh`).
 
 ---
 

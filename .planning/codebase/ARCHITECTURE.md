@@ -4,245 +4,188 @@
 
 ## Pattern Overview
 
-**Overall:** 4-Phase Sequential Pipeline with Early Stopping
-
-The bachman_cortex codebase implements a specialized video validation pipeline that classifies time ranges in egocentric (first-person POV) videos. The pattern is a **sequential, multi-phase pipeline** where each phase produces outputs consumed by the next phase. Phases are orchestrated in `bachman_cortex/pipeline.py` with early-stopping gates (phases 0 and 1) that short-circuit to rejection if criteria fail.
+**Overall:** 4-phase sequential validation pipeline with ML-driven segment filtering and acceptance criteria checking.
 
 **Key Characteristics:**
-- **Phase-based architecture** — Each phase has distinct responsibilities: metadata validation, segment filtering, segment validation, yield calculation
-- **Early stopping at gates** — Phase 0 and Phase 1 can reject the entire video before expensive ML inference in Phase 2
-- **ML model abstraction** — Models (SCRFD, YOLO, Hands23) are loaded once and reused across frames to avoid redundant inference
-- **Cache-driven optimization** — Phase 1 extracts and caches all frames; Phase 2 reuses cached frames, hand detections, and face detections
-- **Deterministic check composition** — Each check is a pure function returning a `CheckResult` (status, metric, confidence); multiple checks compose via logical operators
+- Phase-gated architecture: metadata → segment filtering → segment validation → yield calculation
+- Check-based composition: result aggregation across multiple deterministic and ML-based checks
+- Per-frame to segment pipeline: frame-level classifications aggregate into time segments
+- Caching for efficiency: Phase 1 frames and ML detections reused in Phase 2 without redundant inference
+- Parallel video processing: multi-worker batch mode with single-process model isolation per worker
 
 ## Layers
 
-**CLI/Orchestration Layer:**
-- Purpose: Entry point for batch processing, configuration, multiprocessing coordination
+**Entry Point / CLI:**
+- Purpose: Batch video processing orchestration and configuration
 - Location: `bachman_cortex/run_batch.py`
-- Contains: Argument parsing, video collection, worker pool management (`multiprocessing.Pool`)
-- Depends on: `ValidationProcessingPipeline`, reporting
-- Used by: User runs `validate.sh` → `hl-validate` → `python -m bachman_cortex.run_batch`
+- Contains: CLI argument parsing, batch video collection, worker pool setup, report aggregation
+- Depends on: `pipeline.py`, `reporting.py`, `data_types.py`
+- Used by: Shell scripts and direct CLI invocation
 
-**Pipeline Layer:**
-- Purpose: Implements 4-phase validation logic, orchestrates models and checks
+**Pipeline Core:**
+- Purpose: Main 4-phase validation logic and orchestration
 - Location: `bachman_cortex/pipeline.py`
-- Contains: `ValidationProcessingPipeline` class, phase methods (`_phase0_metadata`, `_phase1_segment_filter`, `_phase2_segment_validation`, `_phase3_yield`)
-- Depends on: Models, checks, utilities (frame extractor, segment ops, transcode)
-- Used by: `run_batch.py` instantiates one per worker
+- Contains: `ValidationProcessingPipeline` class implementing phases 0–3, model loading, frame extraction
+- Depends on: All check modules, all model modules, utils (frame extraction, segment ops, motion analysis)
+- Used by: `run_batch.py`, direct imports
 
-**Model Layer:**
-- Purpose: Wraps ML models for consistent detection interface
-- Locations: `bachman_cortex/models/` (scrfd_detector.py, yolo_detector.py, hand_detector.py)
-- Contains: Model wrappers returning typed Detection objects (FaceDetection, Detection, HandDetection)
-- Depends on: Third-party libraries (insightface, ultralytics, ONNX Runtime)
-- Used by: Pipeline loads and calls `.detect()` / `.detect_batch()` methods
+**Check Implementations:**
+- Purpose: Deterministic and ML-based acceptance criteria
+- Location: `bachman_cortex/checks/` directory
+- Contains: Individual check functions (e.g., `check_hand_visibility()`, `check_motion_camera_stability()`)
+- Depends on: Model outputs, `CheckResult`, shared utilities
+- Used by: `pipeline.py` in phases 0 and 2
 
-**Check Layer:**
-- Purpose: Acceptance criteria as pure functions returning CheckResult
-- Location: `bachman_cortex/checks/`
-- Contains: Individual check functions per criterion (luminance_blur, hand_visibility, motion_analysis, etc.)
-- Depends on: Model detection types, CheckResult dataclass
-- Used by: Pipeline calls checks at specific phases
+**Model Wrappers:**
+- Purpose: Interface to external ML models (SCRFD face, YOLO persons, Hands23 hands)
+- Location: `bachman_cortex/models/` directory
+- Contains: `SCRFDDetector`, `YOLODetector`, `HandObjectDetectorHands23`, model weight downloader
+- Depends on: InsightFace, ultralytics, onnxruntime, detectron2
+- Used by: Phase 1 inference in `pipeline.py`
 
-**Utility Layer:**
-- Purpose: Shared algorithms for frame extraction, segment operations, motion analysis
-- Location: `bachman_cortex/utils/`
-- Contains: Frame extraction (with optional NVDEC), segment merging/filtering, motion analysis, transcoding
-- Depends on: OpenCV, numpy
-- Used by: Pipeline coordinates these utilities
+**Utilities:**
+- Purpose: Shared algorithms and data processing
+- Location: `bachman_cortex/utils/` directory
+- Contains: Frame extraction, segment operations, motion analysis, video transcoding, metadata extraction
+- Depends on: OpenCV, FFmpeg, numpy
+- Used by: `pipeline.py`, check functions
 
-**Data Type Layer:**
-- Purpose: Shared dataclass definitions for type safety
+**Data Types:**
+- Purpose: Shared data structures across pipeline
 - Location: `bachman_cortex/data_types.py`
-- Contains: TimeSegment, FrameLabel, CheckFrameResults, CheckableSegment, SegmentValidationResult, VideoProcessingResult
-- Depends on: CheckResult from checks module
-- Used by: All layers
+- Contains: `TimeSegment`, `FrameLabel`, `CheckableSegment`, `SegmentValidationResult`, `VideoProcessingResult`
+- Depends on: `check_results.py`
+- Used by: All pipeline, check, and reporting modules
 
-**Reporting Layer:**
-- Purpose: Convert processing results to human-readable reports (Markdown, JSON)
+**Reporting:**
+- Purpose: Report generation and result serialization
 - Location: `bachman_cortex/reporting.py`
-- Contains: Timeline entry construction, per-video report formatting, batch report aggregation
-- Depends on: CheckResult, VideoProcessingResult
-- Used by: `run_batch.py` calls after each video completes
+- Contains: Timeline construction, per-video HTML/Markdown reports, batch summaries
+- Depends on: Data types, check results
+- Used by: `run_batch.py` after processing completes
 
 ## Data Flow
 
-**Batch Initialization:**
-1. `run_batch.py` parses arguments and collects video paths
-2. Creates `PipelineConfig` from CLI args
-3. Spawns worker pool (if parallel) or uses single sequential pipeline
-4. Each worker calls `pipeline.load_models()` once (SCRFD, YOLO, Hands23)
+**Phase 0: Metadata Gate**
 
-**Per-Video Processing:**
+1. Load video and extract metadata (codec, resolution, framerate, duration, rotation)
+2. Run deterministic checks: format (MP4), encoding (H.264), resolution (≥1920x1080), framerate (≥28 FPS), duration (≥120s), orientation (landscape)
+3. Short-circuit: if any check fails, reject entire video immediately
+4. Output: `metadata_passed` flag, `metadata_results` per-check
 
-1. **Phase 0: Metadata Gate**
-   - Input: Video file path
-   - Process: `ffprobe` extracts metadata; `run_all_metadata_checks()` validates format, codec, resolution, FPS, duration, orientation
-   - Output: `metadata` dict, `meta_results` dict[str, CheckResult]
-   - Decision: If ANY check fails → return VideoProcessingResult with metadata_passed=False, zero usable duration
+**Phase 1: Segment Filtering**
 
-2. **Single-Pass Frame Extraction (between Phase 0 & 1)**
-   - Input: Video path, sampling FPS (e.g., 1 fps), optional MotionAnalyzer
-   - Process: `extract_frames()` opens video with NVDEC (CUDA) or cv2.VideoCapture; samples frames; tees native-rate stream to MotionAnalyzer
-   - Output: frames list, frame_meta dict, populated motion_analyzer
-   - Why: MotionAnalyzer processes full-resolution native frames once; Phase 2 reuses its statistics without re-opening video
+1. Extract frames at configurable sampling FPS (default 1.0 FPS)
+2. Run single-pass video decode, tee into motion analyzer (no re-open)
+3. Run batch YOLO inference for person detection
+4. Run threaded SCRFD inference for face detection (InsightFace)
+5. Run Hands23 inference for hand detection
+6. Per-frame labels: `face_presence` (bool), `participants` (bool)
+7. Convert per-frame bools → bad segments (contiguous ranges of failed frames)
+8. Merge bad segments across all checks
+9. Compute good segments (inverse of bad)
+10. Filter segments by minimum duration (default 60s)
+11. Output: `prefiltered_segments` list, reusable cache (frames, detections)
 
-3. **Phase 1: Segment Filtering**
-   - Input: frames (downscaled to 720p long-edge), frame metadata
-   - Process:
-     - `_phase1_run_inference()` batches frames through:
-       - YOLO detector (batched) for person detection
-       - SCRFD detector (ThreadPool) for face detection
-       - Hands23 detector (sequential) for hand detection
-     - `eval_face_presence()` marks frames with confident faces as bad (privacy gate)
-     - `eval_participants()` marks frames with other persons as bad
-     - `per_frame_to_bad_segments()` converts per-frame labels to time segments
-     - `merge_bad_segments()` unions overlapping bad segments across checks
-     - `compute_good_segments()` inverts bad segments
-     - `filter_checkable_segments()` keeps only segments ≥ min_checkable_segment_sec (e.g., 60s)
-   - Output: prefiltered_segments (CheckableSegment list), phase1_cache (frames + detections)
-   - Decision: If no segments remain → return with zero usable duration
+**Phase 2: Segment Validation**
 
-4. **Phase 2: Segment Validation**
-   - Input: prefiltered_segments, phase1_cache (frames, detections), motion_analyzer
-   - Process: For each CheckableSegment:
-     - Slice cached frames and detections to segment range
-     - Run parallel motion check (camera stability, frozen segments) via ThreadPoolExecutor
-     - Run sequential checks:
-       - `check_luminance_blur()` — brightness stability + blur detection
-       - `check_hand_visibility()` — both-hands ≥80% OR single-hand ≥90%
-       - `check_hand_object_interaction()` — hand pose keypoints in interacting state
-       - `check_view_obstruction()` — dark/obstructed frame ratio
-       - `check_pov_hand_angle()` — hand angle relative to POV
-       - `check_face_presence()` — strict: zero-tolerance for faces
-     - Collect failing_checks list; segment passes if all checks pass
-   - Output: SegmentValidationResult list (segment + pass/fail + per-check results)
-   - Cache reuse: All detections are from Phase 1; no new ML inference
+1. For each prefiltered segment:
+   - Extract segment-scoped frames and cached detections from Phase 1
+   - Run motion analysis (camera stability, frozen segments) via cached motion analyzer
+   - Run luminance/blur check on segment frames
+   - Run hand visibility check (both hands ≥80% OR single hand ≥90%)
+   - Run hand-object interaction check
+   - Run view obstruction check
+   - Run POV hand angle check
+   - Run strict face presence check (zero-tolerance)
+2. Aggregate check results: fail if any check fails
+3. Output: `usable_segments` (passed), `rejected_segments` (failed), per-check details
 
-5. **Phase 3: Yield Calculation**
-   - Input: segment_results, original_duration_sec
-   - Process: usable_sec = sum of passed segments; unusable_sec = original - usable; yield = usable / original
-   - Output: usable_duration_sec, unusable_duration_sec, yield_ratio
+**Phase 3: Yield Calculation**
 
-**Reporting:**
-- `write_video_report()` converts SegmentValidationResult list to timeline (HH:MM:SS.mmm ranges + reasons)
-- `write_batch_report()` aggregates per-video results and computes batch statistics
-- JSON serialized via `dataclasses.asdict()` for machine-readable output
+1. Sum usable segment durations
+2. Calculate unusable duration = original - usable
+3. Calculate yield ratio = usable / original
+4. Output: `usable_duration_sec`, `unusable_duration_sec`, `yield_ratio`
 
 **State Management:**
 
-- **Per-worker state**: Single `ValidationProcessingPipeline` instance with models loaded once. Models are thread-safe (ONNX Runtime, InsightFace use thread pools internally).
-- **Per-video state**: `VideoProcessingResult` accumulates data through all phases; immutable after construction
-- **Phase 1 cache**: `phase1_cache` dict holds frames, detections, dimensions; passed to Phase 2 and then freed after Phase 2 completes
-- **Motion state**: `MotionAnalyzer` accumulates statistics during single-pass decode; frozen copy passed to Phase 2
+- Phase 1 cache: frames, detections, frame dimensions passed to Phase 2 to avoid redundant inference
+- Motion analyzer: single-pass lightweight motion extraction during decode, cached metrics queried per-segment in Phase 2
+- Model instances: loaded once per worker in batch mode, reused across videos
+- Per-video results: aggregated into JSON and batch reports after all phases complete
 
 ## Key Abstractions
 
-**CheckResult:**
-- Purpose: Uniform interface for all checks to report status, metric, confidence, and debug details
-- Examples: `bachman_cortex/checks/check_results.py`
-- Pattern: All checks return `CheckResult(status, metric_value, confidence, details)`
+**Check Result:**
+- Purpose: Standardized pass/fail output from all checks
+- Examples: `bachman_cortex/checks/check_results.py`, all check functions
+- Pattern: Every check returns `CheckResult(status, metric_value, confidence, details)` where status ∈ {"pass", "fail", "review", "skipped"}
+
+**Time Segment:**
+- Purpose: Represent contiguous ranges in seconds
+- Examples: `bachman_cortex/data_types.py`
+- Pattern: `TimeSegment(start_sec, end_sec)` with computed `duration` property
+
+**Frame Label:**
+- Purpose: Per-frame pass/fail result for a single check
+- Examples: `bachman_cortex/data_types.py`
+- Pattern: `FrameLabel(frame_idx, timestamp_sec, passed, confidence, labels)` for aggregation into bad segments
 
 **Detection Objects:**
-- Purpose: Typed wrappers for model outputs to avoid magic tuples
-- Examples: `FaceDetection` (bbox, confidence, landmarks), `Detection` (bbox, confidence, class_id, class_name), `HandDetection` (bbox, confidence, side, keypoints)
-- Used by: Checks unpack these to evaluate criteria
+- Purpose: Typed results from ML models
+- Examples: `FaceDetection(bbox, confidence, landmarks)`, `HandDetection`, `Detection`
+- Pattern: Simple dataclasses with bounding box, confidence, optional extra fields
 
-**TimeSegment & FrameLabel:**
-- Purpose: Represent time ranges and per-frame decisions
-- Examples: `TimeSegment(start_sec, end_sec)`, `FrameLabel(frame_idx, timestamp_sec, passed, confidence, labels)`
-- Pattern: Per-frame labels → bad segments → good segments → CheckableSegment
-
-**CheckableSegment:**
-- Purpose: A pre-filtered good segment eligible for Phase 2 validation
-- Fields: segment_idx, start_sec, end_sec, duration property
-- Lifecycle: Created in Phase 1, validated in Phase 2, reported in Phase 3
-
-**SegmentValidationResult:**
-- Purpose: Aggregate Phase 2 check results for one segment
-- Fields: segment, passed (boolean), check_results (dict[str, CheckResult]), failing_checks (list[str])
-- Used by: Reporting to explain why segment passed/failed
-
-**VideoProcessingResult:**
-- Purpose: Complete immutable output of one video
-- Fields: metadata, phase0 results, phase1 results, phase2 results, phase3 metrics
-- Serialized: JSON via `dataclasses.asdict()`
-
-**MotionAnalyzer:**
-- Purpose: Single-pass camera stability and frozen segment detection
-- Pattern: Stateful during frame decode (`process_frame()`), read-only during Phase 2
-- Used by: Phase 2 calls `check_motion_combined_from_analyzer()` without re-decoding
+**Segment Validation Result:**
+- Purpose: Phase 2 decision for a single segment
+- Examples: `bachman_cortex/data_types.py`
+- Pattern: `SegmentValidationResult(segment, passed, check_results, failing_checks)`
 
 ## Entry Points
 
-**`validate.sh`:**
-- Location: `/home/egocentric-humynlabs/Documents/hl-bachman/validate.sh`
-- Triggers: User runs `./validate.sh /path/to/videos/`
-- Responsibilities: Check Python version, FFmpeg, git; create venv; install deps; download models; call `hl-validate`
+**CLI Entry Point (batch):**
+- Location: `bachman_cortex/run_batch.py:main()`
+- Triggers: `python -m bachman_cortex.run_batch /path/to/videos/ [options]`
+- Responsibilities: Parse CLI args, collect video files, auto-detect worker count, spawn worker pool, collect results, write reports
 
-**`hl-validate` (via pyproject.toml):**
-- Location: Entry point defined in `pyproject.toml` → calls `run_batch.main()`
-- Triggers: After `pip install -e .`
-- Responsibilities: Alias for `python -m bachman_cortex.run_batch`
+**Shell Script Entry Point:**
+- Location: `validate.sh` (project root)
+- Triggers: `./validate.sh /path/to/videos/ [options]`
+- Responsibilities: Check Python version, install deps, download models, activate venv, invoke `run_batch.py`
 
-**`python -m bachman_cortex.run_batch`:**
-- Location: `bachman_cortex/run_batch.py`
-- Triggers: CLI with video paths and optional flags (--fps, --workers, --output, etc.)
-- Responsibilities:
-  - Collect video files
-  - Auto-detect worker count or use --workers flag
-  - Sequential: Single pipeline instance, models loaded once
-  - Parallel: multiprocessing.Pool, each worker calls `_init_worker()` to load models
-  - Write per-video reports and batch report
-  - Update run index
+**Single-Video Entry Point:**
+- Location: `bachman_cortex/pipeline.py:ValidationProcessingPipeline.process_video()`
+- Triggers: Instantiate `ValidationProcessingPipeline(config)`, call `.process_video(video_path, output_dir)`
+- Responsibilities: Run all 4 phases, return structured `VideoProcessingResult`
 
-**Pipeline Direct Use (for testing/scripting):**
-```python
-from bachman_cortex.pipeline import ValidationProcessingPipeline, PipelineConfig
-config = PipelineConfig(sampling_fps=1.0)
-pipeline = ValidationProcessingPipeline(config)
-pipeline.load_models()
-result = pipeline.process_video("video.mp4", "output_dir/")
-```
+**Worker Process Entry Point:**
+- Location: `bachman_cortex/run_batch.py:_init_worker()`
+- Triggers: Multiprocessing pool initialization (spawn mode)
+- Responsibilities: Load models once per worker, prepare shared `_worker_pipeline` instance
 
 ## Error Handling
 
-**Strategy:** Fail-fast at early gates; graceful degradation for isolated segment/check failures
+**Strategy:** Fail-fast on metadata, graceful degradation on ML checks; preserve partial results.
 
 **Patterns:**
 
-- **Metadata gate fails** (`Phase 0`): Entire video rejected; no ML inference runs; yield = 0%
-- **No checkable segments** (`Phase 1`): Entire video rejected; yield = 0% (metadata passed but no usable content)
-- **Phase 2 check fails**: Individual segment fails; contributing to unusable duration; does not block other segments
-- **Model loading fails**: Pipeline detects unloaded state; lazy-loads on first video if not pre-loaded
-- **Transcoding error**: Caught in `maybe_transcode_hevc_to_h264()`; falls back to original path
-- **Worker exception** (parallel): Traceback printed; error_result added to batch; processing continues
-
-**Try-Catch Locations:**
-- `run_batch.py:_process_video_worker()` — Wraps entire video processing; returns error_result if exception
-- `pipeline.py:_warmup_models()` — Individual model warmup failures logged but don't halt
-- `extract_frames()` — Validates video can be opened; raises ValueError if not
+- Metadata failures: Return early with `metadata_passed=False`, empty segment lists
+- Phase 1 segment filtering: If no checkable segments remain after filtering, return early with empty usable segments
+- Per-segment Phase 2: If segment validation throws, catch and record as failing check
+- Worker failures: Catch exceptions in `_process_video_worker()`, return error dict with traceback
+- Model loading failures: Log warning, continue if fail during warmup; raise if fail during actual inference
+- Missing frames: Return empty segment result with `failing_checks=["no_frames_extracted"]`
 
 ## Cross-Cutting Concerns
 
-**Logging:** 
-- Approach: `print()` statements to stdout/stderr; no logging framework configured
-- Pattern: Progress messages at phase boundaries, per-check results formatted as "check_name status metric=X.XXXX"
-- Examples: Phase 0/1/2/3 headings; frame count progress; inference timing
+**Logging:** Stdout prints progress via `print()` statements at phase boundaries and per-segment validation; designed for batch runner capture.
 
-**Validation:**
-- Metadata checks: Deterministic rules (format, codec, resolution, FPS, duration, orientation)
-- ML checks: Confidence-based thresholds on detection counts, pass rates, angles
-- Segment checks: Duration thresholds (min_checkable_segment_sec, min_bad_segment_sec)
+**Validation:** Every check returns `CheckResult`; status aggregated via `all(r.status != "fail")` pattern throughout.
 
-**Authentication:** 
-- Not applicable — no external API calls; local file processing only
+**Authentication:** None; pipeline is local-only with no remote API calls.
 
-**Configuration:**
-- `PipelineConfig` dataclass: ~40 parameters covering model paths, thresholds, processing options
-- CLI flags in `run_batch.py` expose critical knobs (--fps, --min-segment, --workers, --hevc-to-h264)
-- Default values tuned for egocentric hand pose dataset (720p downscaling, 80%/90% hand visibility, 60s min segment)
+**Model Loading:** Lazy on first video (Phase 1), eager initialization in batch workers via `_init_worker()` and warmup forward passes.
 
 ---
 

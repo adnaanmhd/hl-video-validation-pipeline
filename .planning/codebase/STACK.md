@@ -5,154 +5,112 @@
 ## Languages
 
 **Primary:**
-- Python 3.11+ - Core pipeline, ML checks, batch processing
-  - Versions 3.12, 3.13 explicitly tested and supported
-  - Minimum: Python 3.11 (verified in `validate.sh`)
+- Python 3.11+ - Core application, ML pipeline, video processing, CLI entry point
+- Bash - Setup and deployment (`validate.sh`), environment configuration
 
 **Secondary:**
-- Bash - Installation and setup automation (`validate.sh`)
-- C++ - Compiled extensions for Hands23 and legacy 100DOH detectors
+- C++ - Optional legacy hand detector extensions (100DOH) via PyTorch extension modules
 
 ## Runtime
 
 **Environment:**
-- CPython 3.11+ running in isolated virtual environment (`.venv`)
-- Virtual environment created and managed by `validate.sh`
+- Python 3.11, 3.12, or 3.13 (minimum 3.11, maximum <3.14 per `pyproject.toml`)
+- Virtual environment managed by `venv` module
+- Requires system-level dependencies: `ffmpeg`, `ffprobe`, `git`, build tools (gcc/g++)
 
 **Package Manager:**
-- pip - Primary package installation
-- Lockfile: Not present (uses requirements.txt and pyproject.toml version constraints)
+- pip (via venv)
+- Lockfile: `pyproject.toml` (setuptools-based) and `bachman_cortex/requirements.txt` (reference only)
 
 ## Frameworks
 
-**Core:**
-- PyTorch 2.x - Deep learning foundation
-  - GPU variant: CUDA 12.1 via `https://download.pytorch.org/whl/cu121`
-  - CPU variant: `https://download.pytorch.org/whl/cpu` (auto-detected or forced via `FORCE_CPU=1`)
-  - Version auto-detected from existing installation or installed fresh
+**Core Application:**
+- ultralytics (YOLO11s) - Object and person detection
+- insightface>=0.7.3 - Face detection (SCRFD-2.5GF model)
+- detectron2 - Hand-object detection backbone (Hands23 detector from FaceBook Research)
+- transformers>=4.36.0 - Model hub integration for Grounding DINO
 
-**ML Detection & Computer Vision:**
-- YOLOv11 (Ultralytics) - Object detection and pose estimation
-  - Used for: Person detection (Phase 1), hand-object interaction, body part visibility (Phase 2)
-  - Models: `yolo11s.pt` (default), `yolo11m-pose.pt` (optional, body part visibility)
-- SCRFD-2.5GF (InsightFace) - Face detection
-  - Used for: Face presence checks (Phase 0 metadata, Phase 1 filtering, Phase 2 validation)
-  - Deployed via InsightFace SDK with buffalo_sc weights
-- Hands23 Detector (NeurIPS 2023) - Hand-object interaction detection
-  - Custom architecture built on Detectron2
-  - Used for: Hand visibility, hand-object interaction detection
-  - Requires: Detectron2, PyTorch, and compiled C++ extensions
-- Grounding DINO - Object grounding for privacy checks
-  - Optional, enabled via `--privacy-check` flag
-  - HuggingFace variant via `transformers` library
+**Inference Engines:**
+- PyTorch - Deep learning runtime (CPU or CUDA 12.1, installed separately)
+- ONNX Runtime (onnxruntime or onnxruntime-gpu) - Model inference optimization
+- OpenCV (opencv-python>=4.9.0) - Video I/O, frame processing, optical flow
 
-**Vision & Image Processing:**
-- OpenCV 4.9.0+ - Frame extraction, image processing, optical flow
-  - CUDA-aware build with `cudacodec` module for NVDEC GPU decoding (when available)
-  - Falls back to CPU decoding via `cv2.VideoCapture` if NVDEC unavailable
-  - Custom cv2.dnn shim in `bachman_cortex/_cv2_dnn_shim.py` for ONNX preprocessing
-- Pillow 10.0+ - Image manipulation and format handling
+**Data & Processing:**
+- NumPy>=1.24.0 - Array operations
+- Pillow>=10.0 - Image processing fallback
+- SciPy - Scientific computing (legacy hand detector dependencies)
+- supervision>=0.18.0 - Detection result handling and visualization
 
-**Deep Learning Infrastructure:**
-- ONNX Runtime 1.17.0+ - Model inference acceleration
-  - CPU variant for local development
-  - GPU variant (`onnxruntime-gpu`) on AWS/cloud deployments
-- Detectron2 (Facebook) - Detection framework
-  - Installed from GitHub: `git+https://github.com/facebookresearch/detectron2.git`
-  - Required for Hands23 detector runtime and model architecture
-  - Requires `--no-build-isolation` for compilation
+**Utilities:**
+- tqdm>=4.65 - Progress bars
+- gdown>=5.0 - Google Drive model weight downloads
+- pyyaml - Configuration parsing (legacy hand detector)
+- easydict - Dict-like attribute access (legacy hand detector)
+- cython - C extensions compilation (legacy hand detector)
 
-**Utilities & Data Processing:**
-- NumPy 1.24.0+ - Array and numerical operations
-- Supervision 0.18.0+ - Detection box filtering and visualization utilities
-- TQDM 4.65+ - Progress bars for frame extraction and batch processing
-- gdown 5.0+ - Google Drive model weight downloads (legacy 100DOH)
-- transformers 4.36.0+ - HuggingFace model loading for Grounding DINO
-- easydict - Config dictionary access (legacy 100DOH dependency)
-- PyYAML - Configuration file parsing
-- SciPy - Scientific computing utilities
-- Cython - C extension compilation (legacy 100DOH)
-
-**Build & Development:**
-- setuptools 68.0+ - Package build and installation
-- pytest - Testing framework (referenced in benchmarking tests)
+**Build & Installation:**
+- setuptools>=68.0 - Package management
+- pip with `--index-url` for GPU-specific PyTorch wheels
 
 ## Key Dependencies
 
-**Critical ML Models:**
-- `insightface>=0.7.3` - SCRFD face detector with pre-trained buffalo_sc weights (~50MB)
-- `ultralytics>=8.1.0` - YOLOv11 with auto-download from HuggingFace (~90MB for yolo11s)
-- `torch` 2.x - PyTorch (1.5-2.5GB depending on variant)
-- `torchvision` - Computer vision models and transforms
-- `detectron2` (GitHub) - Backbone for Hands23, requires compilation
-
-**Model Weights (Downloaded at setup):**
-- SCRFD: ~50MB (via InsightFace auto-download)
-- YOLO11s: ~90MB (via Ultralytics auto-download)
-- YOLO11m-pose: ~210MB (optional, via Ultralytics auto-download)
-- Hands23: ~400MB from `https://fouheylab.eecs.umich.edu/~dandans/projects/hands23/`
-- 100DOH (legacy): ~360MB from Google Drive (optional, via `--100doh` flag)
-- Grounding DINO: ~2.5GB (if `--privacy-check` enabled)
+**Critical:**
+- `torch`/`torchvision` - Deep learning (GPU-aware, installed via platform-specific index URL in `validate.sh`)
+- `detectron2` - Installed from GitHub source, requires no-build-isolation flag
+- `onnxruntime` or `onnxruntime-gpu` - Model inference (GPU variant on compute instances)
+- `opencv-python` with CUDA support (custom OpenCV-CUDA build for frame extraction acceleration via `cv2.cudacodec`)
+- `insightface` - Pre-trained face detection models
 
 **Infrastructure:**
-- FFmpeg (external) - Video encoding/decoding
-  - `ffprobe` required for metadata extraction (Phase 0)
-  - Optional `ffmpeg` for HEVC-to-H.264 transcoding via NVENC or libx264
-
-**Optional GPU Acceleration:**
-- NVIDIA CUDA 12.1 - GPU compute (auto-detected, optional)
-- NVIDIA cuDNN - GPU-accelerated deep learning primitives (installed with PyTorch)
-- NVIDIA NVDEC - Hardware video decoding (auto-detected, fallback to CPU decode)
-- NVIDIA NVENC - Hardware video encoding for transcoding (auto-detected, fallback to libx264 -crf 0)
+- ffmpeg/ffprobe - Video metadata extraction and lossless transcoding (HEVC to H.264 via NVENC or libx264)
+- NVIDIA CUDA Toolkit 12.1 - GPU acceleration (detected via `nvidia-smi`)
+- Video Codec SDK 12.2.72 - NVENC/NVDEC hardware video codec libraries (present in `Video_Codec_SDK_12.2.72/` directory)
 
 ## Configuration
 
 **Environment:**
-- Configured via CLI arguments passed to `hl-validate` command
-- No environment variables for secrets (all configuration is CLI or config objects)
-- Python version auto-detection in `validate.sh` (checks 3.12, 3.11, 3.13 in order)
+- `FORCE_CPU=1` - Override automatic GPU detection to use CPU-only PyTorch
+- GPU detection: automatic via `nvidia-smi` check; falls back to CPU if unavailable
 
-**Build:**
-- `pyproject.toml` - Project metadata and dependencies
-  - Entry point: `hl-validate = bachman_cortex.run_batch:main`
-  - Dependencies listed with version constraints but PyTorch/Detectron2 handled separately
-- `bachman_cortex/requirements.txt` - Manual installation reference (not used by validate.sh)
-- `validate.sh` - Orchestrates full setup in order: Python → PyTorch → Detectron2 → ONNX Runtime → Package install → Model downloads
+**Build & Runtime:**
+- PyTorch index URL selection (automatic in `validate.sh`):
+  - GPU: `https://download.pytorch.org/whl/cu121`
+  - CPU: `https://download.pytorch.org/whl/cpu`
+- Model weight caching: `bachman_cortex/models/weights/` directory (created during setup)
+- Model sources:
+  - SCRFD (InsightFace): Automatic download via `insightface` API
+  - YOLO11s: Automatic download via Ultralytics API
+  - Hands23: GitHub clone + manual model weight download from University of Michigan server
+  - 100DOH (legacy, optional): GitHub clone + Google Drive weight download via gdown
 
-**Pipeline Configuration:**
-- `bachman_cortex/pipeline.py:PipelineConfig` - Dataclass with 30+ configurable thresholds
-  - Face confidence: 0.8 (default)
-  - Hand confidence: 0.7 (default)
-  - Hand pass rate: 0.80 (both hands) / 0.90 (single hand)
-  - Motion shakiness threshold: 0.50
-  - Brightness stability std: 60.0
-  - Overridable via CLI args to `hl-validate`
+**Preprocessing:**
+- Optional HEVC to H.264 lossless transcoding flag: `--hevc-to-h264` (default: disabled)
+- Encoder selection: NVENC (`h264_nvenc -preset p7 -tune lossless`) if GPU present, else libx264 (`-crf 0`)
 
 ## Platform Requirements
 
 **Development:**
-- Python 3.11+ (3.12 recommended)
-- FFmpeg with ffprobe
-- Git (for installing detectron2 and cloning model repos)
-- 2GB+ disk space (model weights + venv)
-- C++ compiler for Detectron2/Hands23 compilation:
-  - macOS: Xcode Command Line Tools (`xcode-select --install`)
-  - Ubuntu/Debian: `build-essential` package
+- Python 3.11+ (macOS via `brew install python@3.12`, Ubuntu via `sudo apt install python3.12 python3.12-venv`)
+- FFmpeg (macOS via `brew install ffmpeg`, Ubuntu via `sudo apt install ffmpeg`)
+- git (required for detectron2 and model repos)
+- C++ build tools (macOS: `xcode-select --install`, Ubuntu: `sudo apt install build-essential`)
+- Optional: NVIDIA GPU with CUDA 12.1 support and nvidia-smi
 
-**GPU (Optional):**
-- NVIDIA GPU with CUDA Compute Capability 3.5+ (Kepler generation or newer)
-- NVIDIA driver supporting CUDA 12.1+
-- VRAM: 2GB minimum per worker (multi-worker auto-scales based on available VRAM)
+**Production (AWS/EC2):**
+- GPU instance with NVIDIA driver and CUDA 12.1 support
+- onnxruntime-gpu for accelerated inference
+- FFmpeg with NVENC support (NVIDIA Video Codec SDK 12.2.72 libraries)
+- Parallel video processing: auto-scales to 4 workers max based on available VRAM (8GB per worker minimum)
 
-**Platforms Tested:**
-- macOS (Apple Silicon and Intel)
-- Ubuntu/Debian Linux
-- Windows: Not supported (Detectron2 lacks Windows support; WSL2 alternative provided)
+**Memory Requirements:**
+- Base models: ~6-8 GB VRAM per worker process
+- Multi-worker scaling: up to 4 workers on high-VRAM GPUs
+- CPU-only: fallback with reduced throughput
 
-**Production:**
-- AWS EC2 with GPU (g4dn.xlarge or similar for NVENC/NVDEC)
-- Cloud container images with pre-compiled dependencies
-- Local batch processing on CPU (slower but functional)
+## Initial Setup Duration
+
+- First run: 5-10 minutes (model weight downloads ~1.5GB total: SCRFD, YOLO11s, Hands23)
+- Subsequent runs: sub-second startup (models cached in `bachman_cortex/models/weights/`)
 
 ---
 
