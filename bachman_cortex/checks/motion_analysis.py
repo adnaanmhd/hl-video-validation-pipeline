@@ -258,7 +258,7 @@ def check_camera_stability(
     video_path: str | Path,
     *,
     # Thresholds
-    shaky_score_threshold: float = 0.30,
+    shaky_score_threshold: float = 0.181,
     deep_score_threshold: float = 0.25,
     # Stage 1 tunables
     fast_scale: float = 0.333,
@@ -579,7 +579,7 @@ def check_motion_combined(
     video_path: str | Path,
     *,
     # Stability params
-    shaky_score_threshold: float = 0.30,
+    shaky_score_threshold: float = 0.181,
     fast_scale: float = 0.5,
     trans_threshold: float = 8.0,
     jump_threshold: float = 30.0,
@@ -964,7 +964,7 @@ def check_motion_combined_from_analyzer(
     *,
     start_sec: float,
     end_sec: float,
-    shaky_score_threshold: float = 0.50,
+    shaky_score_threshold: float = 0.181,
     trans_threshold: float = 8.0,
     jump_threshold: float = 30.0,
     rot_threshold: float = 0.3,
