@@ -50,7 +50,7 @@ def _meta_accepted_observed(name: str, r: CheckResult) -> tuple[str, str]:
     if name == "meta_format":
         return "mp4", d.get("container_format", "?")
     elif name == "meta_encoding":
-        return d.get("expected", "h264"), d.get("video_codec", "?")
+        return d.get("expected", "h264 or hevc"), d.get("video_codec", "?")
     elif name == "meta_resolution":
         return (
             f">={d.get('min_width', 1920)}x{d.get('min_height', 1080)}",
@@ -506,7 +506,7 @@ def write_video_report(
     lines.append("")
     lines.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ")
     lines.append(f"**Source:** `{result.video_path}`  ")
-    lines.append(f"**Processing time:** {result.processing_time_sec:.1f}s")
+    lines.append(f"**Wall-clock time:** {result.processing_time_sec:.1f}s")
     lines.append("")
 
     # ── Summary ──────────────────────────────────────────────────────

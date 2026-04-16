@@ -21,14 +21,15 @@ def check_format(metadata: dict) -> CheckResult:
 
 
 def check_encoding(metadata: dict) -> CheckResult:
-    """Check that video codec is H.264."""
+    """Check that video codec is H.264 or HEVC (H.265)."""
     codec = metadata["video_codec"]
-    is_h264 = codec.lower() == "h264"
+    normalized = codec.lower()
+    accepted = normalized in ("h264", "hevc", "h265")
     return CheckResult(
-        status="pass" if is_h264 else "fail",
-        metric_value=1.0 if is_h264 else 0.0,
+        status="pass" if accepted else "fail",
+        metric_value=1.0 if accepted else 0.0,
         confidence=1.0,
-        details={"video_codec": codec, "expected": "h264"},
+        details={"video_codec": codec, "expected": "h264 or hevc"},
     )
 
 
