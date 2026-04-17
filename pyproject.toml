@@ -25,6 +25,7 @@ dependencies = [
     "scipy",
     "pyyaml",
     "cython",
+    "pyarrow>=15.0",
 ]
 
 [project.optional-dependencies]
