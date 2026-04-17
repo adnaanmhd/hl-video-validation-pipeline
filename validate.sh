@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# validate.sh -- One-command setup and run for the video validation pipeline.
+# validate.sh -- One-command setup and run for the scoring engine.
 #
 # Usage:
 #   ./validate.sh /path/to/videos/          # setup (if needed) + run
-#   ./validate.sh --setup-only              # setup only, no pipeline run
+#   ./validate.sh --setup-only              # setup only, no scoring run
 #   FORCE_CPU=1 ./validate.sh /path/to/vid  # force CPU torch even if GPU present
 #
-# First run: installs deps, downloads ~1.5GB of model weights (~5-10 min).
+# First run: installs deps, downloads ~440 MB of model weights (~5-10 min).
 # Subsequent runs: starts in seconds (all checks are idempotent).
 
 set -euo pipefail
@@ -21,30 +21,31 @@ MIN_PYTHON_MINOR=11
 # ─────────────────────────────────────────────────────────────
 
 SETUP_ONLY=0
-PIPELINE_ARGS=()
+SCORE_ARGS=()
 
 for arg in "$@"; do
     if [ "$arg" = "--setup-only" ]; then
         SETUP_ONLY=1
     else
-        PIPELINE_ARGS+=("$arg")
+        SCORE_ARGS+=("$arg")
     fi
 done
 
-if [ "$SETUP_ONLY" -eq 0 ] && [ "${#PIPELINE_ARGS[@]}" -eq 0 ]; then
+if [ "$SETUP_ONLY" -eq 0 ] && [ "${#SCORE_ARGS[@]}" -eq 0 ]; then
     echo "Usage:"
-    echo "  ./validate.sh /path/to/video.mp4        # validate a video"
-    echo "  ./validate.sh /path/to/videos/           # validate a directory of videos"
-    echo "  ./validate.sh --setup-only               # install deps and download models only"
+    echo "  ./validate.sh /path/to/video.mp4         # score one video"
+    echo "  ./validate.sh /path/to/videos/            # score a directory of videos (recursive)"
+    echo "  ./validate.sh --setup-only                # install deps and download models only"
     echo ""
-    echo "Options (passed through to hl-validate):"
-    echo "  --output, -o DIR    Output directory (default: bachman_cortex/results)"
-    echo "  --fps N             Sampling FPS (default: 1.0)"
-    echo "  --min-segment N     Minimum checkable segment duration in seconds (default: 59)"
-    echo "  --min-bad-segment N Bad segments with duration > N seconds are kept; shorter or equal ones are forgiven (default: 2)"
-    echo "  --hevc-to-h264      Before Phase 0, losslessly transcode HEVC inputs to H.264 (strips rotation tag; disabled by default)"
-    echo "  --workers N         Parallel video workers (0=auto, 1=sequential)"
-    echo "  --yolo-model FILE   YOLO model for object detection (default: yolo11s.pt)"
+    echo "Options (passed through to hl-score):"
+    echo "  --out-dir DIR              Output root. run_NNN is created under this (default: results/)"
+    echo "  --config FILE              TOML config with cadences + thresholds"
+    echo "  --workers N                Reserved — auto-detected if omitted"
+    echo "  --hand-detector-repo DIR   Override Hands23 repo/weights path"
+    echo "  --scrfd-root DIR           Override SCRFD weights root"
+    echo "  --yolo-model FILE          Override YOLO weights path (default: yolo11m.pt)"
+    echo "  --dump-default-config      Write the default-config TOML template to stdout and exit"
+    echo "  --verbose, -v              Log per-video progress"
     echo ""
     echo "Environment variables:"
     echo "  FORCE_CPU=1         Force CPU-only PyTorch even if GPU is available"
@@ -218,7 +219,7 @@ info "Checking model weights..."
 python "$SCRIPT_DIR/bachman_cortex/models/download_models.py"
 
 # ─────────────────────────────────────────────────────────────
-# Step 8: Run pipeline (or exit if --setup-only)
+# Step 8: Run scoring engine (or exit if --setup-only)
 # ─────────────────────────────────────────────────────────────
 
 echo ""
@@ -226,15 +227,15 @@ info "Setup complete."
 
 if [ "$SETUP_ONLY" -eq 1 ]; then
     echo ""
-    echo "Run the pipeline with:"
+    echo "Run the scoring engine with:"
     echo "  ./validate.sh /path/to/videos/"
     echo "  # or after activating the venv:"
     echo "  source .venv/bin/activate"
-    echo "  hl-validate /path/to/videos/"
+    echo "  hl-score /path/to/videos/"
     exit 0
 fi
 
 echo ""
-info "Running pipeline..."
+info "Running scoring engine..."
 echo ""
-exec hl-validate "${PIPELINE_ARGS[@]}"
+exec hl-score "${SCORE_ARGS[@]}"

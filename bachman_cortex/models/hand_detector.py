@@ -4,7 +4,8 @@ Active backend: Hands23 (NeurIPS 2023) — successor to 100DOH by the same resea
 Outputs: hand bboxes, left/right, contact state, grasp type, object bboxes + masks.
 
 Previous backend (commented out): 100DOH (CVPR 2020)
-To revert to 100DOH, see hand_detector_100doh.py and swap the import in pipeline.py.
+To revert to 100DOH, see hand_detector_100doh.py and swap the import where
+HandObjectDetectorHands23 is instantiated (bachman_cortex/scoring_engine.py).
 
 Setup:
     python bachman_cortex/models/download_models.py --all
