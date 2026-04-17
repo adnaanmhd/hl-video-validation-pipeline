@@ -38,6 +38,10 @@ Video_Codec_SDK_*/
 # Batch run logs
 logs/
 
+# Local hl-score run outputs
+results/
+val_runs/
+
 # Internal docs (not for public repo)
 idea-brief.md
 style-guide.md
