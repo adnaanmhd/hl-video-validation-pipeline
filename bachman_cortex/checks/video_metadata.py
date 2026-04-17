@@ -72,14 +72,14 @@ def check_frame_rate(metadata: dict) -> CheckResult:
 
 
 def check_duration(metadata: dict) -> CheckResult:
-    """Check that duration is at least 10 seconds."""
+    """Check that duration is at least 59 seconds."""
     dur = metadata["duration_s"]
-    passes = dur >= 10.0
+    passes = dur >= 59.0
     return CheckResult(
         status="pass" if passes else "fail",
         metric_value=1.0 if passes else 0.0,
         confidence=1.0,
-        details={"duration_s": dur, "min_duration_s": 10.0},
+        details={"duration_s": dur, "min_duration_s": 59.0},
     )
 
 
