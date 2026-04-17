@@ -1,27 +1,38 @@
-"""Frame extraction utility for video quality checks.
+"""Native-FPS frame generator for the scoring engine.
 
-Extracts frames at a configurable rate from video files using OpenCV.
-Designed for egocentric video processing pipeline.
+Yields `(frame_idx, frame_bgr_720p)` for every native frame in the video.
+Downstream accumulators own cadence gating — this module does not
+subsample.
+
+Backend selection is automatic: NVDEC via `cv2.cudacodec.VideoReader`
+when the cv2 build has `cudacodec` and a CUDA device is present,
+`cv2.VideoCapture` (CPU) otherwise.
+
+720p long-edge downscale happens here, once, so every downstream check
+can treat the input resolution as fixed.
 """
+
+from __future__ import annotations
 
 import cv2
 import numpy as np
-import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Iterator
 
 
-class _FrameProcessor(Protocol):
-    """Callable-like interface for single-pass frame consumers.
+_DEFAULT_LONG_EDGE = 1280   # 720p long-edge
 
-    Used by `extract_frames` to tee the native-rate decode stream into
-    additional analyzers (e.g. `MotionAnalyzer`) without re-opening the
-    video.
-    """
 
-    frame_skip: int
-
-    def process_frame(self, frame_bgr: np.ndarray, frame_idx: int) -> None: ...
+@dataclass(frozen=True)
+class VideoStreamInfo:
+    """Container + backend metadata reported up-front by `iter_native_frames`."""
+    native_fps: float
+    total_frames: int
+    width: int
+    height: int
+    duration_s: float
+    backend: str            # "nvdec" | "cpu"
 
 
 def _nvdec_available() -> bool:
@@ -37,171 +48,127 @@ def _nvdec_available() -> bool:
 _NVDEC_OK = _nvdec_available()
 
 
-def extract_frames(
-    video_path: str | Path,
-    fps: float = 1.0,
-    max_frames: Optional[int] = None,
-    motion_analyzer: Optional[_FrameProcessor] = None,
-    resize_long_edge: Optional[int] = None,
-) -> tuple[list[np.ndarray], dict]:
-    """Extract frames from a video at the specified sampling rate.
+def _resize_long_edge(frame: np.ndarray, long_edge: int) -> np.ndarray:
+    """Resize in-place so the longest edge equals `long_edge` (or smaller)."""
+    fh, fw = frame.shape[:2]
+    longest = max(fh, fw)
+    if longest <= long_edge:
+        return frame
+    s = long_edge / longest
+    return cv2.resize(
+        frame,
+        (int(round(fw * s)), int(round(fh * s))),
+        interpolation=cv2.INTER_AREA,
+    )
 
-    Uses `cv2.cudacodec.VideoReader` (NVDEC) when the cv2 build has the
-    `cudacodec` module and a CUDA device is present; otherwise falls back
-    to `cv2.VideoCapture` (CPU decode). Output frames are BGR numpy
-    arrays in either path.
 
-    Args:
-        video_path: Path to the video file.
-        fps: Frames per second to sample. Default 1.0 = 1 frame/second.
-        max_frames: Maximum number of frames to extract. None = no limit.
-        motion_analyzer: Optional stateful consumer receiving the native-rate
-            stream at its `frame_skip` cadence. Lets the motion check skip a
-            second full-video decode.
-        resize_long_edge: If set, resize sampled frames so the long edge
-            equals this value (pixels). Motion analyzer still receives
-            full-resolution frames. Prevents OOM on long videos.
-
-    Returns:
-        Tuple of (frames, metadata) where:
-        - frames: List of BGR numpy arrays (OpenCV format)
-        - metadata: Dict with video_fps, total_frames, duration_s,
-                     width, height, frames_extracted, extraction_time_s,
-                     backend ("nvdec" or "cpu")
-    """
-    video_path = str(video_path)
-
-    # Probe metadata via VideoCapture (cheap — just reads container headers).
-    # cv2.cudacodec.VideoReader.format().fps is unreliable (can be NaN).
-    probe = cv2.VideoCapture(video_path)
+def probe_video(video_path: str | Path) -> VideoStreamInfo:
+    """Read container headers without decoding — cheap, used by the engine."""
+    path = str(video_path)
+    probe = cv2.VideoCapture(path)
     if not probe.isOpened():
-        raise ValueError(f"Cannot open video: {video_path}")
-    video_fps = probe.get(cv2.CAP_PROP_FPS)
-    total_frames = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
+        raise ValueError(f"Cannot open video: {path}")
+    fps = probe.get(cv2.CAP_PROP_FPS) or 0.0
+    total = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
     width = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
     probe.release()
-    duration_s = total_frames / video_fps if video_fps > 0 else 0
+    duration = (total / fps) if fps > 0 else 0.0
+    backend = "nvdec" if _NVDEC_OK else "cpu"
+    return VideoStreamInfo(
+        native_fps=round(fps, 6),
+        total_frames=total,
+        width=width,
+        height=height,
+        duration_s=round(duration, 3),
+        backend=backend,
+    )
 
-    frame_interval = video_fps / fps  # native frames between samples
-    motion_skip = motion_analyzer.frame_skip if motion_analyzer is not None else 0
 
-    backend = "cpu"
-    reader = None
-    if _NVDEC_OK:
+def iter_native_frames(
+    video_path: str | Path,
+    long_edge: int = _DEFAULT_LONG_EDGE,
+) -> tuple[VideoStreamInfo, Iterator[tuple[int, np.ndarray]]]:
+    """Open the video and return `(info, generator)`.
+
+    The generator yields `(frame_idx, frame_bgr_720p)` for every native
+    frame. Consumers must pump the generator to completion — it
+    releases the underlying reader on exhaustion.
+
+    This is a two-tuple (not a plain generator) so the caller has
+    up-front access to `native_fps`, `total_frames`, and the backend
+    label before they start iterating. That lets the engine stamp
+    those values into the report without a pre-probe pass.
+    """
+    info = probe_video(video_path)
+    path = str(video_path)
+
+    def _gen_nvdec() -> Iterator[tuple[int, np.ndarray]]:
+        reader = cv2.cudacodec.createVideoReader(path)
+        frame_idx = 0
         try:
-            reader = cv2.cudacodec.createVideoReader(video_path)
-            backend = "nvdec"
-        except cv2.error:
-            reader = None
-
-    frames: list[np.ndarray] = []
-    t_start = time.perf_counter()
-    next_target = 0.0
-    frame_idx = 0
-    sample_limit_reached = False
-
-    if reader is not None:
-        # NVDEC path: nextFrame() always decodes (GPU-cheap). Download
-        # BGR only at sample/motion points.
-        while True:
-            ok, gpu_frame = reader.nextFrame()
-            if not ok:
-                break
-
-            need_sample = (not sample_limit_reached) and (frame_idx >= next_target)
-            need_motion = (motion_skip > 0) and (frame_idx % motion_skip == 0)
-
-            if need_sample or need_motion:
+            while True:
+                ok, gpu_frame = reader.nextFrame()
+                if not ok:
+                    break
                 gpu_bgr = cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGRA2BGR)
                 frame = gpu_bgr.download()
-                if resize_long_edge:
-                    fh, fw = frame.shape[:2]
-                    if max(fh, fw) > resize_long_edge:
-                        s = resize_long_edge / max(fh, fw)
-                        frame = cv2.resize(
-                            frame,
-                            (int(round(fw * s)), int(round(fh * s))),
-                            interpolation=cv2.INTER_AREA,
-                        )
-                if need_motion:
-                    motion_analyzer.process_frame(frame, frame_idx)
-                if need_sample:
-                    frames.append(frame)
-                    if max_frames and len(frames) >= max_frames:
-                        sample_limit_reached = True
-                    next_target += frame_interval
+                frame = _resize_long_edge(frame, long_edge)
+                yield frame_idx, frame
+                frame_idx += 1
+        finally:
+            # cv2.cudacodec.VideoReader has no explicit close; drop ref.
+            del reader
 
-            frame_idx += 1
-            if sample_limit_reached and motion_skip == 0:
-                break
-    else:
-        # CPU fallback: grab every native frame, retrieve only at sample
-        # or motion points.
-        cap = cv2.VideoCapture(video_path)
+    def _gen_cpu() -> Iterator[tuple[int, np.ndarray]]:
+        cap = cv2.VideoCapture(path)
         if not cap.isOpened():
-            raise ValueError(f"Cannot open video: {video_path}")
-        while frame_idx < total_frames:
-            if not cap.grab():
-                break
-
-            need_sample = (not sample_limit_reached) and (frame_idx >= next_target)
-            need_motion = (motion_skip > 0) and (frame_idx % motion_skip == 0)
-
-            if need_sample or need_motion:
-                ret, frame = cap.retrieve()
-                if not ret:
+            raise ValueError(f"Cannot open video: {path}")
+        frame_idx = 0
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
                     break
-                if resize_long_edge:
-                    fh, fw = frame.shape[:2]
-                    if max(fh, fw) > resize_long_edge:
-                        s = resize_long_edge / max(fh, fw)
-                        frame = cv2.resize(
-                            frame,
-                            (int(round(fw * s)), int(round(fh * s))),
-                            interpolation=cv2.INTER_AREA,
-                        )
-                if need_motion:
-                    motion_analyzer.process_frame(frame, frame_idx)
-                if need_sample:
-                    frames.append(frame)
-                    if max_frames and len(frames) >= max_frames:
-                        sample_limit_reached = True
-                    next_target += frame_interval
+                frame = _resize_long_edge(frame, long_edge)
+                yield frame_idx, frame
+                frame_idx += 1
+        finally:
+            cap.release()
 
-            frame_idx += 1
-            if sample_limit_reached and motion_skip == 0:
-                break
-        cap.release()
+    if info.backend == "nvdec":
+        try:
+            return info, _gen_nvdec()
+        except cv2.error:
+            # Fall through to CPU on NVDEC init failure.
+            pass
 
-    extraction_time = time.perf_counter() - t_start
-
-    metadata = {
-        "video_fps": video_fps,
-        "total_frames": total_frames,
-        "duration_s": round(duration_s, 2),
-        "width": width,
-        "height": height,
-        "frames_extracted": len(frames),
-        "extraction_time_s": round(extraction_time, 3),
-        "sampling_fps": fps,
-        "backend": backend,
-    }
-
-    return frames, metadata
+    return VideoStreamInfo(
+        native_fps=info.native_fps,
+        total_frames=info.total_frames,
+        width=info.width,
+        height=info.height,
+        duration_s=info.duration_s,
+        backend="cpu",
+    ), _gen_cpu()
 
 
 if __name__ == "__main__":
     import sys
+    import time
 
     if len(sys.argv) < 2:
-        print("Usage: python frame_extractor.py <video_path> [fps]")
+        print("Usage: python frame_extractor.py <video_path>")
         sys.exit(1)
 
-    video_path = sys.argv[1]
-    fps = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
-
-    print(f"Extracting frames from {video_path} at {fps} FPS...")
-    frames, meta = extract_frames(video_path, fps=fps)
-    print(f"Extracted {meta['frames_extracted']} frames in {meta['extraction_time_s']}s")
-    print(f"Video: {meta['width']}x{meta['height']}, {meta['duration_s']}s, {meta['video_fps']} FPS")
+    info, frames = iter_native_frames(sys.argv[1])
+    t0 = time.perf_counter()
+    count = 0
+    for _idx, _frame in frames:
+        count += 1
+    dt = time.perf_counter() - t0
+    print(
+        f"{info.backend}: {count} frames in {dt:.2f}s "
+        f"({count / dt:.1f} FPS), native_fps={info.native_fps}, "
+        f"dims={info.width}x{info.height}"
+    )
