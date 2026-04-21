@@ -34,7 +34,11 @@ from bachman_cortex.data_types import (
     BatchScoreReport,
     CheckStats,
     METADATA_CHECKS,
+    METADATA_OBSERVATIONS,
+    METADATA_OBSERVATION_CATEGORICAL,
+    METADATA_OBSERVATION_NUMERIC,
     MetadataCheckResult,
+    MetadataObservations,
     QUALITY_METRICS,
     QUALITY_VALUE_LABELS,
     QualityMetricResult,
@@ -134,6 +138,41 @@ def _render_metadata_table(checks: list[MetadataCheckResult]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_observation_value(field: str, value: Any) -> str:
+    """Human-readable cell for a single observation field."""
+    if value is None:
+        return "Unknown" if field in METADATA_OBSERVATION_CATEGORICAL else "-"
+    if field == "bitrate_mbps" and isinstance(value, (int, float)):
+        return f"{float(value):.2f} Mbps"
+    if field == "gop" and isinstance(value, (int, float)):
+        return f"{float(value):.1f}"
+    if field == "color_depth_bits" and isinstance(value, int):
+        return f"{value}-bit"
+    return str(value)
+
+
+def _csv_observation_value(field: str, value: Any) -> str:
+    """CSV-safe cell for a single observation field (no unit suffixes)."""
+    if value is None:
+        return "Unknown" if field in METADATA_OBSERVATION_CATEGORICAL else "-"
+    if field == "bitrate_mbps" and isinstance(value, (int, float)):
+        return f"{float(value):.2f}"
+    if field == "gop" and isinstance(value, (int, float)):
+        return f"{float(value):.1f}"
+    return str(value)
+
+
+def _render_observations_table(obs: MetadataObservations | None) -> str:
+    lines = ["| Field | Value |", "|---|---|"]
+    if obs is None:
+        for f in METADATA_OBSERVATIONS:
+            lines.append(f"| {f} | - |")
+        return "\n".join(lines)
+    for f in METADATA_OBSERVATIONS:
+        lines.append(f"| {f} | {_fmt_observation_value(f, getattr(obs, f))} |")
+    return "\n".join(lines)
+
+
 def _render_technical_table(checks: list[TechnicalCheckResult]) -> str:
     lines = ["| Check | Status | Accepted | Detected |",
              "|---|---|---|---|"]
@@ -184,6 +223,10 @@ def _render_video_markdown(report: VideoScoreReport) -> str:
         "## Metadata",
         "",
         _render_metadata_table(report.metadata_checks),
+        "",
+        "## Metadata observations",
+        "",
+        _render_observations_table(report.metadata_observations),
         "",
         "## Technical",
         "",
@@ -284,6 +327,8 @@ def _render_batch_markdown(batch: BatchScoreReport) -> str:
                 f"{qs.min_percent:.2f} | {qs.max_percent:.2f} |"
             )
 
+    lines.extend(_render_observations_aggregate(batch.videos))
+
     if batch.errors:
         lines.extend([
             "",
@@ -320,6 +365,81 @@ def _render_batch_markdown(batch: BatchScoreReport) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _render_observations_aggregate(videos: list[VideoScoreReport]) -> list[str]:
+    """Batch-level aggregate: mean/median/min/max for numeric fields,
+    distribution histogram for categorical fields. Skips sections when
+    no data is available (e.g. an empty batch).
+    """
+    if not videos:
+        return []
+
+    numeric: dict[str, list[float]] = {f: [] for f in METADATA_OBSERVATION_NUMERIC}
+    categorical: dict[str, dict[str, int]] = {
+        f: {} for f in METADATA_OBSERVATION_CATEGORICAL
+    }
+
+    for v in videos:
+        obs = v.metadata_observations
+        if obs is None:
+            continue
+        for f in METADATA_OBSERVATION_NUMERIC:
+            val = getattr(obs, f, None)
+            if val is None:
+                continue
+            try:
+                numeric[f].append(float(val))
+            except (TypeError, ValueError):
+                continue
+        for f in METADATA_OBSERVATION_CATEGORICAL:
+            val = getattr(obs, f, None)
+            key = "Unknown" if val is None else str(val)
+            categorical[f][key] = categorical[f].get(key, 0) + 1
+
+    out: list[str] = ["", "## Metadata observations (aggregate)", ""]
+
+    any_numeric = any(numeric[f] for f in METADATA_OBSERVATION_NUMERIC)
+    if any_numeric:
+        out.extend([
+            "### Numeric",
+            "",
+            "| Field | Mean | Median | Min | Max |",
+            "|---|---|---|---|---|",
+        ])
+        for f in METADATA_OBSERVATION_NUMERIC:
+            vals = numeric[f]
+            if not vals:
+                out.append(f"| {f} | - | - | - | - |")
+                continue
+            precision = {"gop": 1, "color_depth_bits": 0}.get(f, 2)
+            fmt = f"%.{precision}f"
+            out.append(
+                f"| {f} | {fmt % statistics.fmean(vals)} | "
+                f"{fmt % statistics.median(vals)} | "
+                f"{fmt % min(vals)} | {fmt % max(vals)} |"
+            )
+
+    any_categorical = any(categorical[f] for f in METADATA_OBSERVATION_CATEGORICAL)
+    if any_categorical:
+        if any_numeric:
+            out.append("")
+        out.extend([
+            "### Categorical",
+            "",
+            "| Field | Distribution |",
+            "|---|---|",
+        ])
+        for f in METADATA_OBSERVATION_CATEGORICAL:
+            hist = categorical[f]
+            if not hist:
+                out.append(f"| {f} | - |")
+                continue
+            ordered = sorted(hist.items(), key=lambda kv: (-kv[1], kv[0]))
+            body = ", ".join(f"{label}: {count}" for label, count in ordered)
+            out.append(f"| {f} | {body} |")
+
+    return out
+
+
 def _batch_report_to_dict(batch: BatchScoreReport) -> dict[str, Any]:
     d = dataclasses.asdict(batch)
     for video in d.get("videos", []):
@@ -340,6 +460,8 @@ def _render_batch_csv(batch: BatchScoreReport) -> str:
         header.extend([f"tech_{c}_status", f"tech_{c}_value"])
     for m in QUALITY_METRICS:
         header.append(f"quality_{m}_pct")
+    for f in METADATA_OBSERVATIONS:
+        header.append(f"meta_{f}")
     rows.append(header)
 
     for v in batch.videos:
@@ -367,6 +489,11 @@ def _render_batch_csv(batch: BatchScoreReport) -> str:
                 row.append("SKIPPED")
             else:
                 row.append(f"{q.percent_frames:.2f}")
+        for f in METADATA_OBSERVATIONS:
+            row.append(_csv_observation_value(
+                f, getattr(v.metadata_observations, f, None)
+                if v.metadata_observations is not None else None
+            ))
         rows.append(row)
 
     import io

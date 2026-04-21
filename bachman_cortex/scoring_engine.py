@@ -79,7 +79,8 @@ from bachman_cortex.segmentation import (
     segment_contact_value,
 )
 from bachman_cortex.utils.frame_extractor import iter_native_frames
-from bachman_cortex.utils.video_metadata import get_video_metadata
+from bachman_cortex.utils.metadata_observations import build_observations
+from bachman_cortex.utils.video_metadata import get_avg_gop, get_video_metadata
 
 
 # ── Metadata formatters ────────────────────────────────────────────────────
@@ -296,6 +297,12 @@ class ScoringEngine:
         meta = get_video_metadata(video_path)
         duration_s = float(meta["duration_s"])
 
+        # Observations are populated for every video (including metadata
+        # failures) — they come from the same ffprobe call plus one cheap
+        # packet-level GOP scan.
+        avg_gop = get_avg_gop(video_path)
+        observations = build_observations(meta, avg_gop)
+
         raw_meta = run_all_metadata_checks(meta)
         metadata_checks = _fmt_metadata_checks(
             raw_meta,
@@ -314,6 +321,7 @@ class ScoringEngine:
                 processing_wall_time_s=round(time.perf_counter() - t_start, 3),
                 duration_s=duration_s,
                 metadata_checks=metadata_checks,
+                metadata_observations=observations,
                 technical_checks=[
                     TechnicalCheckResult(check=c, status="skipped",
                                          accepted="-", detected="-", skipped=True)
@@ -506,6 +514,7 @@ class ScoringEngine:
             processing_wall_time_s=round(time.perf_counter() - t_start, 3),
             duration_s=duration_s,
             metadata_checks=metadata_checks,
+            metadata_observations=observations,
             technical_checks=technical_checks,
             quality_metrics=quality_metrics,
             technical_skipped=False,

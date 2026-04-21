@@ -20,6 +20,31 @@ class MetadataCheckResult:
     detected: str
 
 
+@dataclass
+class MetadataObservations:
+    """Non-gating metadata readings. All seven fields populated for every
+    video (including metadata-failed ones) — they come from the same
+    ffprobe call the gated checks consume. Unknown values use the
+    sentinels listed below rather than `None`, so the report table
+    never renders a bare dash for a field we can in principle compute.
+
+    - `bitrate_mbps`: video-stream bitrate in Mbps (float, 2 decimals). `None` only if ffprobe did not emit `bit_rate` on the stream (rare).
+    - `gop`: average GOP size from packet-level keyframe scan (float, 1 decimal). `None` when unresolvable (no keyframes reported).
+    - `color_depth_bits`: 8/10/12 inferred from `bits_per_raw_sample` with `pix_fmt` as fallback. `None` if neither source resolves.
+    - `b_frames`: "Y" / "N" derived from `has_b_frames`.
+    - `hdr`: "ON" / "OFF" per the transfer-function rule (see `checks.md`).
+    - `stabilization`: "Y" / "N" / "Unknown" per the vendor registry.
+    - `fov`: raw vendor label (e.g. "Wide", "~78°", "GoPro-embedded") or "Unknown".
+    """
+    bitrate_mbps: float | None
+    gop: float | None
+    color_depth_bits: int | None
+    b_frames: str
+    hdr: str
+    stabilization: str
+    fov: str
+
+
 # ── Technical stage ───────────────────────────────────────────────────────
 
 @dataclass
@@ -97,6 +122,7 @@ class VideoScoreReport:
     duration_s: float
 
     metadata_checks: list[MetadataCheckResult] = field(default_factory=list)
+    metadata_observations: MetadataObservations | None = None
     technical_checks: list[TechnicalCheckResult] = field(default_factory=list)
     quality_metrics: list[QualityMetricResult] = field(default_factory=list)
 
@@ -147,3 +173,23 @@ QUALITY_VALUE_LABELS: dict[str, str] = {
     "participants": "confidence",
     "obstructed": "obstructed",
 }
+
+# Metadata observations — canonical order for report rows and CSV columns.
+METADATA_OBSERVATIONS: tuple[str, ...] = (
+    "bitrate_mbps",
+    "gop",
+    "color_depth_bits",
+    "b_frames",
+    "hdr",
+    "stabilization",
+    "fov",
+)
+
+# Which observations are numeric (aggregated as mean/median/min/max in batch
+# MD) vs categorical (aggregated as a distribution histogram).
+METADATA_OBSERVATION_NUMERIC: tuple[str, ...] = (
+    "bitrate_mbps", "gop", "color_depth_bits",
+)
+METADATA_OBSERVATION_CATEGORICAL: tuple[str, ...] = (
+    "b_frames", "hdr", "stabilization", "fov",
+)

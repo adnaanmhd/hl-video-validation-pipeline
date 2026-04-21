@@ -63,6 +63,25 @@ decode is performed.
 | duration    | ≥ 59 s.                                                      |
 | orientation | Rotation ∈ {0, 90, 270} AND landscape after rotation.        |
 
+### Stage 1.5 — Metadata observations (non-gating)
+
+Alongside the gated checks, each video records seven metadata
+observations. These are **recorded, not scored** — no pass/fail, no
+gating effect on later stages. Populated for every video, including
+those that fail the metadata gate.
+
+| Field              | Value                                                                        |
+| ------------------ | ---------------------------------------------------------------------------- |
+| bitrate_mbps       | Video-stream bitrate in Mbps (ffprobe).                                      |
+| gop                | Average GOP size (packet-level keyframe scan, no decode).                    |
+| color_depth_bits   | 8 / 10 / 12, from `bits_per_raw_sample` with `pix_fmt` fallback.             |
+| b_frames           | `Y` / `N`, from ffprobe `has_b_frames`.                                      |
+| hdr                | `ON` / `OFF`. ON iff `color_transfer ∈ {smpte2084, arib-std-b67}`, or a Dolby Vision signal is present (side-data record or codec tag in {`dvhe`, `dvav`, `dvh1`, `dva1`}). BT.2020 primaries alone do not qualify. |
+| stabilization      | `Y` / `N` / `Unknown`, from a device-agnostic vendor registry (gyroflow/ReelSteady in encoder tag, GoPro encoder, Google CAMM track, Samsung `smta`/`svss` atoms, DJI markers, Apple software tag → `Unknown`). |
+| fov                | Raw vendor label or `Unknown`. GoPro / DJI return placeholder `{vendor}-embedded` pending the GPMD / `udta` KLV parser (next task). Apple iPhone computes `~{deg}°` from the 35mm-equivalent focal length tag when present. |
+
+See [`checks.md`](checks.md) for the exact detection rules and registry.
+
 ### Stage 2 — Technical
 
 Runs against every video that passes metadata, in a single streaming
@@ -210,8 +229,10 @@ hl-bachman/
     │   ├── scrfd_detector.py    # SCRFD via InsightFace.
     │   └── yolo_detector.py     # YOLO11 via Ultralytics.
     └── utils/
-        ├── frame_extractor.py   # iter_native_frames (NVDEC/cv2 generator).
-        └── video_metadata.py    # ffprobe wrapper.
+        ├── frame_extractor.py       # iter_native_frames (NVDEC/cv2 generator).
+        ├── video_metadata.py        # ffprobe wrapper + avg-GOP scan.
+        ├── metadata_observations.py # Seven non-gating metadata observations + vendor registry.
+        └── gpmd.py                  # GoPro GPMD timed-metadata stub (real KLV parser lands with IMU work).
 ```
 
 ---

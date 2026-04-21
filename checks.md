@@ -29,6 +29,93 @@ Thresholds are configurable in the TOML config under `[metadata]`.
 
 ---
 
+## Metadata observations (non-gating)
+
+Alongside the six gated checks above, each video records seven
+observations. They are **recorded, not scored** — no pass/fail, no
+effect on whether stages 2 and 3 run. Populated for every video,
+including those that fail the metadata gate (the readings come from
+the same ffprobe call).
+
+All values come from one existing ffprobe call plus one extra cheap
+packet-level scan for GOP (no decode).
+
+| Field              | Value format | Source rule                                                                                                   |
+| ------------------ | ------------ | ------------------------------------------------------------------------------------------------------------- |
+| bitrate_mbps       | float (Mbps) | Video stream `bit_rate` / 1e6, 2 decimals. Format-level bitrate is **not** used — video only.                  |
+| gop                | float        | `total_packets / keyframe_count` on the video stream, packet-level `flags=K` (IDR keyframes), no decode.       |
+| color_depth_bits   | 8 / 10 / 12  | `bits_per_raw_sample` when present; else regex on `pix_fmt` (`yuv420p10le` → 10); else 8 for `yuv*`/`nv*`/`rgb*`/`gray*`; else `None`. |
+| b_frames           | Y / N        | `has_b_frames > 0` → Y; else N.                                                                                 |
+| hdr                | ON / OFF     | ON iff **any** of: `color_transfer ∈ {smpte2084, arib-std-b67}` (PQ / HLG); side_data contains a Dolby Vision record; `codec_tag_string ∈ {dvhe, dvav, dvh1, dva1}`. Else OFF. **BT.2020 primaries alone are not HDR.** |
+| stabilization      | Y / N / Unknown | Vendor registry (below). First match wins.                                                                   |
+| fov                | string       | Vendor registry (below). First match wins. Raw vendor label is preserved; no cross-vendor normalisation.       |
+
+### HDR rule — rationale
+
+Transfer function is authoritative; primaries alone are not. Some UHD
+SDR material is mastered in BT.2020 primaries with `bt709` transfer —
+that is not HDR. Dolby Vision is detected separately because DV can
+ship with `bt709` transfer while carrying a PQ/HDR layer in side
+data.
+
+- `smpte2084` → HDR10 / ST 2084 / PQ
+- `arib-std-b67` → HLG (ARIB STD-B67)
+- `DOVI configuration record` in `side_data_list` → Dolby Vision
+- `dvhe` / `dvav` / `dvh1` / `dva1` codec tags → Dolby Vision fallback
+
+### Stabilization registry
+
+Device-agnostic. Evaluated in priority order; first positive match
+wins. Absence of any signal → `Unknown`, never `N` (few containers
+carry a "stabilization: off" marker; reporting `N` there would be a
+false negative).
+
+| Priority | Vendor / signal          | Detector                                                                                    | Returns   |
+| -------- | ------------------------ | ------------------------------------------------------------------------------------------- | --------- |
+| 1        | gyroflow / ReelSteady    | video-stream `encoder` tag matches `\b(gyroflow\|reelsteady\|hypersmooth)\b`                 | `Y`       |
+| 2a       | GoPro                    | `encoder` contains `gopro`                                                                   | `Y`       |
+| 2b       | GoPro (GPMD track)       | any stream has `handler_name` containing `gopro met` or `gpmd`, or `codec_tag_string=gpmd`   | `Y`       |
+| 3        | Google CAMM              | any stream `handler_name` contains `camm` (Google Camera Motion Metadata)                    | `Y`       |
+| 4        | Samsung                  | `smta` / `svss` atoms or `samsung`-prefixed tags on format/stream                            | `Y`       |
+| 5        | DJI                      | `encoder` or `handler_name` contains `dji`                                                   | `Y`       |
+| 6        | Apple iPhone             | `com.apple.quicktime.software` tag present                                                   | `Unknown` (container does not reveal EIS/OIS state at capture) |
+| —        | no match                 | —                                                                                           | `Unknown` |
+
+### FOV registry
+
+Same ordering principle. Most containers carry no FOV signal, so
+`Unknown` is the common case.
+
+| Priority | Vendor       | Detector                                                  | Returns                              |
+| -------- | ------------ | --------------------------------------------------------- | ------------------------------------ |
+| 1        | GoPro        | GPMD stream present, or `encoder` contains `gopro`        | `GoPro-embedded` (placeholder until the GPMD KLV parser lands with IMU extraction) |
+| 2        | DJI          | `encoder`/`handler_name` contains `dji`                   | `DJI-embedded` (placeholder until the `udta` parser lands)                         |
+| 3        | Apple iPhone | `com.apple.quicktime.focal.length.35mmEquiv` tag present  | `~{deg}°` computed from 35mm-equivalent focal length via `HFOV = 2·atan(36 / 2f)`  |
+| —        | no match     | —                                                         | `Unknown`                            |
+
+GoPro / DJI currently return the `{vendor}-embedded` sentinel rather
+than the actual lens preset — the real KLV parser for the GPMD /
+`udta` streams is the next piece of work (paired with IMU extraction).
+When it lands, this registry promotes the sentinel to the real label
+without touching anything else.
+
+### Where these appear
+
+- **Per-video `report.md`:** `## Metadata observations` section with
+  a `| Field | Value |` table.
+- **Per-video `{video}.json`:** under the top-level
+  `metadata_observations` key.
+- **Batch `batch_results.csv`:** one column per field, `meta_{field}`,
+  value only (no status / accepted columns).
+- **Batch `batch_report.md`:** `## Metadata observations (aggregate)`
+  section with a numeric sub-table (mean / median / min / max for
+  `bitrate_mbps`, `gop`, `color_depth_bits`) and a categorical
+  sub-table (distribution histogram for `b_frames`, `hdr`,
+  `stabilization`, `fov`). Per-video rows in the batch MD stay
+  summary-only.
+
+---
+
 ## Stage 2: Technical checks
 
 All four checks run on every video that passes the metadata gate. Any one failure marks technical-failed.
@@ -84,12 +171,12 @@ Runs shorter than `merge_threshold_s` (default 1.0s) absorb into their preceding
 
 Per video:
 
-- `report.md` — human-readable Markdown tables.
-- `{video_name}.json` — same content as MD but structured, JSON-safe (NaN serialised as the string `"NaN"`).
-- `{video_name}.parquet` — one row per native frame, dense schema (see `SCORING_ENGINE_PLAN.md` §4). Omitted when metadata failed (nothing decoded).
+- `report.md` — human-readable Markdown tables (`## Metadata`, `## Metadata observations`, `## Technical`, `## Quality`).
+- `{video_name}.json` — same content as MD but structured, JSON-safe (NaN serialised as the string `"NaN"`). Observations live under `metadata_observations`.
+- `{video_name}.parquet` — one row per native frame, dense schema (see `SCORING_ENGINE_PLAN.md` §4). Omitted when metadata failed (nothing decoded). Observations are **not** in parquet (single value per video, not per frame).
 
 Per batch:
 
-- `batch_report.md`, `batch_results.json`, `batch_results.csv` in the run-dir root.
+- `batch_report.md`, `batch_results.json`, `batch_results.csv` in the run-dir root. Per-video observations appear as extra columns in the CSV and as an aggregate section at the bottom of the batch MD.
 
 Output layout: `results/run_NNN/{video_name}/report.md`, etc. `NNN` is zero-padded to 3 digits and auto-extends past 999.

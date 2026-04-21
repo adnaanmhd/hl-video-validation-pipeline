@@ -6,6 +6,9 @@
 
 Every decision below has been explicitly agreed with Adnaan. Do not re-open closed questions — implement as specified.
 
+> **Post-lock additions.** §11 captures feature work agreed after the
+> initial lock. Numbered sections 0–10 remain the original locked plan.
+
 ---
 
 ## 0. What this is
@@ -513,3 +516,75 @@ Each step is one commit. Stops at any step leave `main` unaffected.
 - `bachman_cortex/pipeline.py` — to delete, but useful reference for the existing model-loading sequence.
 - `bachman_cortex/checks/*` — refactor targets; existing per-frame logic can be extracted.
 - Git history — `a9adc1e` onwards contains the most recent check implementations (luminance/pixelation split, stability high-pass filter, HEVC acceptance).
+
+---
+
+## 11. Post-lock additions
+
+### 11.1 Metadata observations (2026-04-21)
+
+Seven non-gating observations recorded alongside the six gated
+metadata checks. **Recorded, not scored** — no pass/fail, no gating
+effect. Populated for every video including metadata-failed ones
+(they reuse the existing ffprobe call + one cheap packet-level GOP
+scan; no decode, no model inference).
+
+**Fields** (canonical order, used for CSV columns + per-video MD
+rows):
+
+| Field              | Type / format | Source rule |
+| ------------------ | ------------- | ----------- |
+| `bitrate_mbps`     | float (Mbps)  | video-stream `bit_rate` / 1e6 (stream, not format) |
+| `gop`              | float         | `total_packets / keyframe_count` via packet-level `flags=K` (no decode); ~4 s / hour |
+| `color_depth_bits` | int           | `bits_per_raw_sample` with `pix_fmt` regex fallback (`yuv420p10le` → 10) |
+| `b_frames`         | `Y` / `N`     | `has_b_frames > 0` |
+| `hdr`              | `ON` / `OFF`  | `color_transfer ∈ {smpte2084, arib-std-b67}` OR Dolby Vision side-data / codec tag. BT.2020 primaries alone are not HDR |
+| `stabilization`    | `Y` / `N` / `Unknown` | Device-agnostic vendor registry (priority order): gyroflow/ReelSteady → GoPro (encoder + GPMD) → Google CAMM track → Samsung `smta`/`svss` → DJI → Apple (`Unknown`) → `Unknown`. `N` is reserved for explicit off-signals (rare); absence resolves to `Unknown` |
+| `fov`              | string        | Vendor registry: GoPro / DJI return `{vendor}-embedded` until the KLV parser lands (paired with IMU extraction); Apple derives `~{deg}°` from the 35mm-equiv focal-length tag; else `Unknown` |
+
+Full rule text and registry priorities live in `checks.md`.
+
+**Data model.** New `MetadataObservations` dataclass in
+`data_types.py`; optional field on `VideoScoreReport`. Canonical
+tuples `METADATA_OBSERVATIONS`, `METADATA_OBSERVATION_NUMERIC`,
+`METADATA_OBSERVATION_CATEGORICAL` drive ordering + aggregation.
+
+**Output artefacts.** Added surfaces — no existing schema broken:
+
+- Per-video `report.md`: new `## Metadata observations` section with
+  a `| Field | Value |` table, between `## Metadata` and
+  `## Technical`.
+- Per-video `{video}.json`: `metadata_observations` key next to
+  `metadata_checks`.
+- Batch `batch_results.csv`: seven new trailing columns (`meta_*`),
+  one per field, value only (no status/accepted columns — these are
+  not checks).
+- Batch `batch_report.md`: new `## Metadata observations (aggregate)`
+  section with numeric sub-table (mean / median / min / max) for
+  `bitrate_mbps`, `gop`, `color_depth_bits`, and categorical
+  sub-table (distribution histogram) for `b_frames`, `hdr`,
+  `stabilization`, `fov`. Per-video rows in the batch MD remain
+  summary-only.
+- Parquet: unchanged. Observations are one-per-video, not per-frame.
+
+**Module additions:**
+
+- `bachman_cortex/utils/metadata_observations.py` — pure extractors
+  + `build_observations()` + vendor registry.
+- `bachman_cortex/utils/gpmd.py` — GoPro GPMD timed-metadata stream
+  detection stub; the real KLV parser lands with the IMU extraction
+  work and plugs into this module without changing the observations
+  pipeline.
+- `bachman_cortex/utils/video_metadata.py` — `get_avg_gop()` +
+  `collect_tag_surface()` added. Backward-compatible: the existing
+  `get_video_metadata()` return dict gained fields, no existing keys
+  removed or renamed.
+
+**Rationale notes.** Stream-level bitrate chosen over format-level
+because the reading is intended as a video-quality signal, not a
+file-on-disk signal. HDR rule intentionally rejects BT.2020 primaries
+alone (seen in UHD SDR masters). `Unknown` is a first-class value —
+reporting `N` in the absence of a signal would be a lossy false
+negative. FOV intentionally returns `{vendor}-embedded` placeholders
+for GoPro/DJI so the presence of richer data is reflected even before
+the KLV parser lands.

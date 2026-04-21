@@ -20,9 +20,11 @@ that fail the technical stage happen downstream.
 
 ```
 ffprobe metadata → run_all_metadata_checks
+   │              → build_observations (non-gating; 7 fields always populated)
    │
    ├── any fail? ──▶ VideoScoreReport with all technical/quality = SKIPPED.
-   │                 Write report.md + {video}.json. NO parquet.
+   │                 Observations still populated. Write report.md +
+   │                 {video}.json. NO parquet.
    ▼
 [Stage 2 + 3] Single streaming decode pass @ native FPS
    │   each native frame dispatched to accumulators by cadence:
@@ -64,7 +66,9 @@ the reports; see `batch.score_batch`.
 | `per_frame_store.py`                   | In-memory row buffer + single-shot parquet writer.            |
 | `reporting.py`                         | Per-video + batch report writers (MD / JSON / CSV).            |
 | `utils/frame_extractor.py`             | `iter_native_frames` — NVDEC/cv2 generator + 720p resize.     |
-| `utils/video_metadata.py`              | ffprobe wrapper.                                              |
+| `utils/video_metadata.py`              | ffprobe wrapper + avg-GOP packet scan + tag-surface flattener. |
+| `utils/metadata_observations.py`       | Seven non-gating metadata observations + vendor registry for stabilization / FOV. |
+| `utils/gpmd.py`                        | GoPro GPMD timed-metadata stub (real KLV parser lands with IMU extraction). |
 | `checks/video_metadata.py`             | Six metadata checks against ffprobe output.                    |
 | `checks/motion_analysis.py`            | `MotionAnalyzer` (stability + frozen finalise).                |
 | `checks/luminance.py`                  | `LuminanceAccumulator`.                                        |
@@ -95,6 +99,12 @@ the reports; see `batch.score_batch`.
 - Parquet is the ground truth (always emitted when the engine
   decoded); MD/JSON are the curated view and can hide quality when
   technical failed.
+- **Metadata observations are one-per-video**, not per-frame. They
+  live on `VideoScoreReport.metadata_observations` and in the batch
+  CSV; they are **not** in parquet. They are populated unconditionally
+  — even on metadata-gate failure — because they come from the same
+  ffprobe call plus one cheap packet-level GOP scan. No decode, no
+  model inference.
 
 ---
 
