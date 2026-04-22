@@ -25,9 +25,9 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class LuminanceThresholds:
-    good_frame_ratio: float = 0.80
+    good_frame_ratio: float = 0.50
     dead_black_max: float = 15.0
-    too_dark_max: float = 45.0
+    too_dark_max: float = 30.0
     blown_out_min: float = 230.0
     flicker_window: int = 10
     flicker_stddev_threshold: float = 30.0

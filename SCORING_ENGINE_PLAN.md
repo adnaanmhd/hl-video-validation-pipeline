@@ -95,7 +95,7 @@ Both-hands and single-hand metrics may pass for the same frame (not mutually exc
 | resolution | ≥ 1920×1080 displayed (after rotation) |
 | frame_rate | ≥ 28 FPS |
 | duration | ≥ 59 seconds |
-| orientation | rotation ∈ {0, 90, 270} **AND** displayed landscape |
+| orientation | rotation ∈ {0, 90, 180, 270} **AND** displayed landscape |
 
 All 6 must pass for technical to run. Any single failure marks the video metadata-failed; technical and quality are reported SKIPPED (no decode performed).
 
@@ -433,12 +433,12 @@ w_jump = 0.20
 highpass_window_sec = 0.5
 
 [technical.frozen]
-max_consecutive = 60
+max_consecutive = 900
 trans_threshold = 0.1
 rot_threshold = 0.001
 
 [technical.luminance]
-good_frame_ratio = 0.80
+good_frame_ratio = 0.50
 # ... all sub-thresholds exposed
 
 [technical.pixelation]

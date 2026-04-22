@@ -145,7 +145,7 @@ class StabilityThresholds:
 
 @dataclass(frozen=True)
 class FrozenThresholds:
-    max_consecutive: int = 60
+    max_consecutive: int = 900
     trans_threshold: float = 0.1
     rot_threshold: float = 0.001
 

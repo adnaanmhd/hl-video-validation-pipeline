@@ -59,16 +59,16 @@ class Stability:
 
 @dataclass(frozen=True)
 class Frozen:
-    max_consecutive: int = 60
+    max_consecutive: int = 900
     trans_threshold: float = 0.1
     rot_threshold: float = 0.001
 
 
 @dataclass(frozen=True)
 class Luminance:
-    good_frame_ratio: float = 0.80
+    good_frame_ratio: float = 0.50
     dead_black_max: float = 15.0
-    too_dark_max: float = 45.0
+    too_dark_max: float = 30.0
     blown_out_min: float = 230.0
     flicker_window: int = 10
     flicker_stddev_threshold: float = 30.0
@@ -200,14 +200,14 @@ w_jump = 0.20
 highpass_window_sec = 0.5
 
 [technical.frozen]
-max_consecutive = 60
+max_consecutive = 900
 trans_threshold = 0.1
 rot_threshold = 0.001
 
 [technical.luminance]
-good_frame_ratio = 0.80
+good_frame_ratio = 0.50
 dead_black_max = 15.0
-too_dark_max = 45.0
+too_dark_max = 30.0
 blown_out_min = 230.0
 flicker_window = 10
 flicker_stddev_threshold = 30.0

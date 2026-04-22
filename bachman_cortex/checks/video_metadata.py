@@ -84,10 +84,10 @@ def check_duration(metadata: dict) -> CheckResult:
 
 
 def check_orientation(metadata: dict) -> CheckResult:
-    """Check that rotation is 0, 90, or 270 and displayed video is landscape.
+    """Check that rotation is 0, 90, 180, or 270 and displayed video is landscape.
 
-    Upside-down (rotation=180) is rejected. After applying rotation,
-    displayed_width must be greater than displayed_height.
+    After applying rotation, displayed_width must be greater than
+    displayed_height.
     """
     rotation = metadata["rotation"]
     w, h = metadata["width"], metadata["height"]
@@ -95,7 +95,7 @@ def check_orientation(metadata: dict) -> CheckResult:
         disp_w, disp_h = h, w
     else:
         disp_w, disp_h = w, h
-    passes = rotation in (0, 90, 270) and disp_w > disp_h
+    passes = rotation in (0, 90, 180, 270) and disp_w > disp_h
     return CheckResult(
         status="pass" if passes else "fail",
         metric_value=1.0 if passes else 0.0,
@@ -103,7 +103,7 @@ def check_orientation(metadata: dict) -> CheckResult:
         details={
             "rotation": rotation, "width": w, "height": h,
             "displayed_width": disp_w, "displayed_height": disp_h,
-            "expected_rotation": "0, 90, or 270",
+            "expected_rotation": "0, 90, 180, or 270",
             "expected": "displayed_width > displayed_height",
         },
     )

@@ -23,7 +23,7 @@ Any single failure marks the video metadata-failed; technical and quality are re
 | resolution  | Displayed dims ≥ 1920×1080 (after rotation).                                          | ffprobe |
 | frame_rate  | ≥ 28 FPS.                                                                             | ffprobe |
 | duration    | ≥ 59 s.                                                                               | ffprobe |
-| orientation | Rotation ∈ {0, 90, 270} AND displayed landscape (displayed_width > displayed_height). | ffprobe |
+| orientation | Rotation ∈ {0, 90, 180, 270} AND displayed landscape (displayed_width > displayed_height). | ffprobe |
 
 Thresholds are configurable in the TOML config under `[metadata]`.
 
@@ -221,9 +221,9 @@ All four checks run on every video that passes the metadata gate. Any one failur
 
 | Check      | Rule                                                                                                   | Cadence / resolution         |
 | ---------- | ------------------------------------------------------------------------------------------------------ | ---------------------------- |
-| luminance  | ≥ 80% good frames (neither dead black <15, too dark 15–45, blown out >230, nor flicker window).        | 10 FPS, 360p                 |
+| luminance  | ≥ 50% good frames (neither dead black <15, too dark 15–30, blown out >230, nor flicker window).        | 10 FPS, 360p                 |
 | stability  | Whole-video mean jitter score ≤ 0.181 (high-pass-filtered LK optical flow).                            | 30 FPS cap, 360p (0.5×)      |
-| frozen     | No run > 60 consecutive native-frame-equivalents with near-zero motion (trans < 0.1 px, rot < 0.001°). | Derived from motion samples. |
+| frozen     | No run > 900 consecutive native-frame-equivalents with near-zero motion (trans < 0.1 px, rot < 0.001°). | Derived from motion samples. |
 | pixelation | ≥ 80% frames with blockiness ratio ≤ 1.5.                                                              | 10 FPS, 720p                 |
 
 Thresholds are configurable under `[technical.luminance]`, `[technical.stability]`, `[technical.frozen]`, `[technical.pixelation]`.

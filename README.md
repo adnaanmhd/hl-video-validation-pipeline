@@ -61,7 +61,7 @@ decode is performed.
 | resolution  | Displayed dims ≥ 1920×1080 (after rotation).                |
 | frame_rate  | ≥ 28 FPS.                                                   |
 | duration    | ≥ 59 s.                                                      |
-| orientation | Rotation ∈ {0, 90, 270} AND landscape after rotation.        |
+| orientation | Rotation ∈ {0, 90, 180, 270} AND landscape after rotation.        |
 
 ### Stage 1.5 — Metadata observations (non-gating)
 
@@ -116,9 +116,9 @@ per-frame columns still land in parquet).
 
 | Check      | Rule                                                                     |
 | ---------- | ------------------------------------------------------------------------ |
-| luminance  | ≥ 80% good frames (not dead black / too dark / blown out / flicker).      |
+| luminance  | ≥ 50% good frames (not dead black / too dark / blown out / flicker).      |
 | stability  | Whole-video mean jitter score ≤ 0.181 (high-pass-filtered LK).             |
-| frozen     | No run > 60 consecutive native-frame-equivalents of near-zero motion.      |
+| frozen     | No run > 900 consecutive native-frame-equivalents of near-zero motion.      |
 | pixelation | ≥ 80% frames with blockiness ratio ≤ 1.5.                                  |
 
 ### Stage 3 — Quality metrics

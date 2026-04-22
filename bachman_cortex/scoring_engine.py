@@ -114,7 +114,7 @@ def _fmt_metadata_checks(
         "duration": (raw["meta_duration"],
                      f">= {min_duration_s:g} s"),
         "orientation": (raw["meta_orientation"],
-                        "rotation in (0, 90, 270) + landscape"),
+                        "rotation in (0, 90, 180, 270) + landscape"),
     }
 
     out: list[MetadataCheckResult] = []
